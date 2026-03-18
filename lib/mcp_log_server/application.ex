@@ -3,7 +3,7 @@ defmodule McpLogServer.Application do
 
   @impl true
   def start(_type, _args) do
-    log_dir = System.get_env("LOG_DIR", "/tmp/galactic-logs")
+    log_dir = System.get_env("LOG_DIR", "/tmp/mcp-logs")
     File.mkdir_p!(log_dir)
 
     children = [

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# Galactic Log MCP Server - Multi-Stage Dockerfile
+# MCP Log Server - Multi-Stage Dockerfile
 # =============================================================================
 
 ARG ELIXIR_VERSION=1.17
@@ -44,19 +44,19 @@ RUN apk add --no-cache \
     openssl \
     tini && \
     rm -rf /var/cache/apk/* /tmp/* && \
-    addgroup -g 1000 galactic && \
-    adduser -u 1000 -G galactic -s /sbin/nologin -D galactic && \
-    mkdir -p /tmp/galactic-logs && \
-    chown galactic:galactic /tmp/galactic-logs
+    addgroup -g 1000 appuser && \
+    adduser -u 1000 -G appuser -s /sbin/nologin -D appuser && \
+    mkdir -p /tmp/mcp-logs && \
+    chown appuser:appuser /tmp/mcp-logs
 
 WORKDIR /app
 
-COPY --from=builder --chown=galactic:galactic /app/_build/prod/rel/mcp_log_server ./
+COPY --from=builder --chown=appuser:appuser /app/_build/prod/rel/mcp_log_server ./
 
-USER galactic:galactic
+USER appuser:appuser
 
 ENV MIX_ENV=prod \
-    LOG_DIR=/tmp/galactic-logs
+    LOG_DIR=/tmp/mcp-logs
 
 ENTRYPOINT ["/sbin/tini", "-g", "--"]
 CMD ["bin/mcp_log_server", "start"]

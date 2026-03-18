@@ -10,7 +10,7 @@ defmodule McpLogServer.Server do
   alias McpLogServer.Tools.{Dispatcher, Registry}
   alias McpLogServer.Transport.Stdio
 
-  @server_info %{name: "galactic-log-server", version: "0.1.0"}
+  @server_info %{name: "mcp-log-server", version: "0.1.0"}
 
   @doc "Handle a raw JSON line from the transport."
   @spec handle_message(String.t()) :: :ok
@@ -25,7 +25,7 @@ defmodule McpLogServer.Server do
 
   @doc "Return the log directory from env."
   @spec log_dir() :: String.t()
-  def log_dir, do: System.get_env("LOG_DIR", "/tmp/galactic-logs")
+  def log_dir, do: System.get_env("LOG_DIR", "/tmp/mcp-logs")
 
   # -- MCP routing --
 

@@ -8,7 +8,7 @@ defmodule McpLogServer.IntegrationTest do
     IO.puts("=== MCP Log Server Integration Test ===\n")
 
     # Setup: create test log files
-    log_dir = "/tmp/galactic-logs-test-#{:rand.uniform(100_000)}"
+    log_dir = "/tmp/mcp-logs-test-#{:rand.uniform(100_000)}"
     File.mkdir_p!(log_dir)
 
     File.write!(Path.join(log_dir, "api.log"), """
@@ -55,7 +55,7 @@ defmodule McpLogServer.IntegrationTest do
       params: %{protocolVersion: "2024-11-05", capabilities: %{}}
     })
     results = results ++ [assert_test("initialize", fn ->
-      assert_field(result, ["result", "serverInfo", "name"], "galactic-log-server") &&
+      assert_field(result, ["result", "serverInfo", "name"], "mcp-log-server") &&
       assert_field(result, ["result", "protocolVersion"], "2024-11-05")
     end)]
 
