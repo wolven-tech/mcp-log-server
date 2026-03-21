@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "log-server": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "-v", "./tmp/logs:/tmp/mcp-logs", "ghcr.io/wolven-tech/mcp-log-server:latest"],
+      "type": "stdio"
+    }
+  }
+}

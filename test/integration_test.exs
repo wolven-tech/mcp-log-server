@@ -14,17 +14,24 @@ defmodule McpLogServer.IntegrationTest do
     File.write!(Path.join(log_dir, "api.log"), """
     [2026-03-16 21:00:00] INFO: API started on port 5500
     [2026-03-16 21:00:01] INFO: Connected to Redis
-    [2026-03-16 21:00:02] ERROR: Failed to connect to Kalshi WebSocket
-    [2026-03-16 21:00:03] WARN: RedLock quorum failed for tenant predictor
+    [2026-03-16 21:00:02] ERROR: Failed to connect to upstream WebSocket
+    [2026-03-16 21:00:03] WARN: Distributed lock quorum failed, retrying
     [2026-03-16 21:00:04] INFO: Fetched 4856 events across 25 pages
-    [2026-03-16 21:00:05] ERROR: Kalshi WebSocket max reconnection attempts reached
-    [2026-03-16 21:00:06] DEBUG: Processing market update for BTC-USD
+    [2026-03-16 21:00:05] ERROR: WebSocket max reconnection attempts reached
+    [2026-03-16 21:00:06] DEBUG: Processing event update batch
     """)
 
     File.write!(Path.join(log_dir, "recommendation.log"), """
     [2026-03-16 21:00:00] INFO: Recommendation service started on port 5503
     [2026-03-16 21:00:01] ERROR: All 4690 embeddings failed
-    [2026-03-16 21:00:02] INFO: Qdrant connected for tenant predictor
+    [2026-03-16 21:00:02] INFO: Vector database connected
+    """)
+
+    # JSON log file for JSON-aware tool testing
+    File.write!(Path.join(log_dir, "gateway.log"), """
+    {"severity":"INFO","message":"Request received","timestamp":"2026-03-16T21:00:00Z","sessionId":"sess-abc-123","traceId":"t-001"}
+    {"severity":"ERROR","message":"Auth token expired","timestamp":"2026-03-16T21:00:01Z","sessionId":"sess-abc-123","traceId":"t-002"}
+    {"severity":"INFO","message":"Health check OK","timestamp":"2026-03-16T21:00:02Z","sessionId":"sess-xyz-999","traceId":"t-003"}
     """)
 
     # Start the server as a subprocess
@@ -63,9 +70,12 @@ defmodule McpLogServer.IntegrationTest do
     result = send_and_receive(port, %{
       jsonrpc: "2.0", id: 2, method: "tools/list"
     })
-    results = results ++ [assert_test("tools/list returns 6 tools", fn ->
+    # Tool count derived from Registry so this test never goes stale.
+    # If you add/remove a tool, update Registry.@tools — this test follows automatically.
+    expected_tool_count = length(McpLogServer.Tools.Registry.definitions())
+    results = results ++ [assert_test("tools/list returns #{expected_tool_count} tools", fn ->
       tools = get_in_result(result, ["result", "tools"])
-      is_list(tools) && length(tools) == 6
+      is_list(tools) && length(tools) == expected_tool_count
     end)]
 
     # Test 3: list_logs
@@ -73,9 +83,11 @@ defmodule McpLogServer.IntegrationTest do
       jsonrpc: "2.0", id: 3, method: "tools/call",
       params: %{name: "list_logs", arguments: %{}}
     })
-    results = results ++ [assert_test("list_logs finds 2 files", fn ->
+    results = results ++ [assert_test("list_logs finds 3 files", fn ->
       text = get_text(result)
-      text != nil && String.contains?(text, "api.log") && String.contains?(text, "recommendation.log")
+      text != nil && String.contains?(text, "api.log") &&
+        String.contains?(text, "recommendation.log") &&
+        String.contains?(text, "gateway.log")
     end)]
 
     # Test 4: tail_log
@@ -108,12 +120,12 @@ defmodule McpLogServer.IntegrationTest do
     # Test 6: search_logs
     result = send_and_receive(port, %{
       jsonrpc: "2.0", id: 6, method: "tools/call",
-      params: %{name: "search_logs", arguments: %{"file" => "api.log", "pattern" => "Kalshi"}}
+      params: %{name: "search_logs", arguments: %{"file" => "api.log", "pattern" => "WebSocket"}}
     })
-    results = results ++ [assert_test("search_logs finds Kalshi mentions", fn ->
+    results = results ++ [assert_test("search_logs finds WebSocket mentions", fn ->
       text = get_text(result)
       text != nil &&
-        String.contains?(text, "Kalshi") &&
+        String.contains?(text, "WebSocket") &&
         String.contains?(text, "|")  # TOON format
     end)]
 
@@ -150,12 +162,61 @@ defmodule McpLogServer.IntegrationTest do
     })
     results = results ++ [assert_test("missing file returns error", fn ->
       text = get_text(result)
-      text != nil && String.contains?(text, "not found")
+      text != nil && (String.contains?(text, "not found") || String.contains?(text, "Not found"))
     end)]
 
-    # Test 10: unknown tool
+    # Test 10: time_range
     result = send_and_receive(port, %{
       jsonrpc: "2.0", id: 10, method: "tools/call",
+      params: %{name: "time_range", arguments: %{"file" => "api.log"}}
+    })
+    results = results ++ [assert_test("time_range returns earliest/latest", fn ->
+      text = get_text(result)
+      text != nil &&
+        String.contains?(text, "earliest") &&
+        String.contains?(text, "latest") &&
+        String.contains?(text, "span")
+    end)]
+
+    # Test 11: correlate across files
+    result = send_and_receive(port, %{
+      jsonrpc: "2.0", id: 11, method: "tools/call",
+      params: %{name: "correlate", arguments: %{"value" => "sess-abc-123"}}
+    })
+    results = results ++ [assert_test("correlate finds session across files", fn ->
+      text = get_text(result)
+      text != nil &&
+        String.contains?(text, "sess-abc-123") &&
+        String.contains?(text, "gateway.log")
+    end)]
+
+    # Test 12: trace_ids discovers unique IDs
+    result = send_and_receive(port, %{
+      jsonrpc: "2.0", id: 12, method: "tools/call",
+      params: %{name: "trace_ids", arguments: %{"field" => "sessionId"}}
+    })
+    results = results ++ [assert_test("trace_ids discovers session IDs", fn ->
+      text = get_text(result)
+      text != nil &&
+        String.contains?(text, "sess-abc-123") &&
+        String.contains?(text, "sess-xyz-999")
+    end)]
+
+    # Test 13: get_errors on JSON file uses severity (no false positives)
+    result = send_and_receive(port, %{
+      jsonrpc: "2.0", id: 13, method: "tools/call",
+      params: %{name: "get_errors", arguments: %{"file" => "gateway.log"}}
+    })
+    results = results ++ [assert_test("get_errors on JSON uses severity field", fn ->
+      text = get_text(result)
+      text != nil &&
+        String.contains?(text, "Auth token expired") &&
+        !String.contains?(text, "Health check")  # INFO should not appear
+    end)]
+
+    # Test 14: unknown tool
+    result = send_and_receive(port, %{
+      jsonrpc: "2.0", id: 14, method: "tools/call",
       params: %{name: "fake_tool", arguments: %{}}
     })
     results = results ++ [assert_test("unknown tool returns error", fn ->

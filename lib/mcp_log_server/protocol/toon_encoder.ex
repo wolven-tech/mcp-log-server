@@ -85,10 +85,4 @@ defmodule McpLogServer.Protocol.ToonEncoder do
   defp encode_value(v) when is_atom(v), do: to_string(v)
   defp encode_value(v), do: inspect(v)
 
-  defp uniform_list?([%{} = first | rest]) do
-    keys = Map.keys(first) |> Enum.sort()
-    Enum.all?(rest, fn item -> Map.keys(item) |> Enum.sort() == keys end)
-  end
-
-  defp uniform_list?(_), do: false
 end

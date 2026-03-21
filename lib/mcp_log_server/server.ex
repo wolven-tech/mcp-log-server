@@ -23,9 +23,9 @@ defmodule McpLogServer.Server do
     :ok
   end
 
-  @doc "Return the log directory from env."
+  @doc "Return the log directory from application config."
   @spec log_dir() :: String.t()
-  def log_dir, do: System.get_env("LOG_DIR", "/tmp/mcp-logs")
+  def log_dir, do: Application.fetch_env!(:mcp_log_server, :log_dir)
 
   # -- MCP routing --
 

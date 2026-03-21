@@ -1,0 +1,17 @@
+{"severity":"INFO","message":"Gateway started on port 8080","timestamp":"2026-03-20T14:00:00.000Z","service":"gateway"}
+{"severity":"INFO","message":"Route table loaded: 12 upstream services","timestamp":"2026-03-20T14:00:01.000Z","service":"gateway"}
+{"severity":"INFO","message":"JWT validation middleware enabled","timestamp":"2026-03-20T14:00:01.500Z","service":"gateway"}
+{"severity":"INFO","message":"POST /api/v1/sessions - 201 Created (42ms)","timestamp":"2026-03-20T14:00:10.000Z","service":"gateway","sessionId":"sess-7a2f","requestId":"req-001","userId":"user-314","duration_ms":42}
+{"severity":"INFO","message":"GET /api/v1/events?category=politics - 200 OK (890ms)","timestamp":"2026-03-20T14:00:15.000Z","service":"gateway","sessionId":"sess-7a2f","requestId":"req-002","userId":"user-314","duration_ms":890}
+{"severity":"WARN","message":"Slow upstream response from api:4000 (2340ms > 2000ms threshold)","timestamp":"2026-03-20T14:01:00.000Z","service":"gateway","sessionId":"sess-7a2f","requestId":"req-003","upstream":"api","duration_ms":2340}
+{"severity":"INFO","message":"POST /api/v1/sessions - 201 Created (38ms)","timestamp":"2026-03-20T14:01:05.000Z","service":"gateway","sessionId":"sess-9c4d","requestId":"req-004","userId":"user-827","duration_ms":38}
+{"severity":"INFO","message":"GET /api/v1/markets/live - 200 OK (120ms)","timestamp":"2026-03-20T14:01:30.000Z","service":"gateway","sessionId":"sess-9c4d","requestId":"req-005","userId":"user-827","duration_ms":120}
+{"severity":"ERROR","message":"POST /api/v1/predictions - 502 Bad Gateway","timestamp":"2026-03-20T14:02:15.000Z","service":"gateway","sessionId":"sess-7a2f","requestId":"req-006","userId":"user-314","upstream":"api","duration_ms":30012,"error":{"type":"UpstreamTimeout","message":"api:4000 did not respond within 30s"}}
+{"severity":"ERROR","message":"POST /api/v1/predictions - 502 Bad Gateway","timestamp":"2026-03-20T14:02:16.000Z","service":"gateway","sessionId":"sess-9c4d","requestId":"req-008","userId":"user-827","upstream":"api","duration_ms":30005,"error":{"type":"UpstreamTimeout","message":"api:4000 did not respond within 30s"}}
+{"severity":"WARN","message":"Circuit breaker OPEN for api:4000 (5 failures in 60s)","timestamp":"2026-03-20T14:02:20.000Z","service":"gateway","upstream":"api"}
+{"severity":"ERROR","message":"GET /api/v1/events - 503 Service Unavailable (circuit breaker open)","timestamp":"2026-03-20T14:02:25.000Z","service":"gateway","sessionId":"sess-7a2f","requestId":"req-009","userId":"user-314","upstream":"api"}
+{"severity":"INFO","message":"GET /health - 200 OK (2ms)","timestamp":"2026-03-20T14:03:00.000Z","service":"gateway","duration_ms":2}
+{"severity":"INFO","message":"Circuit breaker HALF-OPEN for api:4000, testing upstream","timestamp":"2026-03-20T14:03:10.000Z","service":"gateway","upstream":"api"}
+{"severity":"INFO","message":"Circuit breaker CLOSED for api:4000 (upstream recovered)","timestamp":"2026-03-20T14:03:15.000Z","service":"gateway","upstream":"api"}
+{"severity":"INFO","message":"GET /api/v1/recommendations?q=election - 200 OK (145ms)","timestamp":"2026-03-20T14:04:00.000Z","service":"gateway","sessionId":"sess-9c4d","requestId":"req-013","userId":"user-827","duration_ms":145}
+{"severity":"INFO","message":"GET /health - 200 OK (1ms)","timestamp":"2026-03-20T14:05:00.000Z","service":"gateway","duration_ms":1}

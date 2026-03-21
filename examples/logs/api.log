@@ -1,0 +1,29 @@
+[2026-03-20 14:00:00] INFO: API server started on port 4000
+[2026-03-20 14:00:01] INFO: Connected to PostgreSQL at db:5432
+[2026-03-20 14:00:01] INFO: Redis connection pool initialized (size=10)
+[2026-03-20 14:00:02] INFO: WebSocket client connecting to upstream data feed
+[2026-03-20 14:00:03] INFO: WebSocket connected, subscribing to live events
+[2026-03-20 14:00:10] INFO: Fetched 4856 events across 25 pages sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:00:15] INFO: Processing event snapshot sessionId=sess-7a2f requestId=req-002
+[2026-03-20 14:00:20] INFO: Health check passed: db=ok redis=ok ws=connected
+[2026-03-20 14:01:00] WARN: Slow query detected (2.3s) on events.find_by_category sessionId=sess-7a2f requestId=req-003
+[2026-03-20 14:01:05] INFO: Event update received: 142 new events sessionId=sess-9c4d requestId=req-004
+[2026-03-20 14:01:30] WARN: Distributed lock quorum failed, retrying in 500ms sessionId=sess-9c4d requestId=req-005
+[2026-03-20 14:01:31] INFO: Lock acquired on retry sessionId=sess-9c4d requestId=req-005
+[2026-03-20 14:02:00] INFO: Health check passed: db=ok redis=ok ws=connected
+[2026-03-20 14:02:15] ERROR: Failed to connect to upstream WebSocket: ECONNREFUSED sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:16] WARN: WebSocket reconnecting (attempt 1/5) sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:17] WARN: WebSocket reconnecting (attempt 2/5) sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:18] WARN: WebSocket reconnecting (attempt 3/5) sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:19] WARN: WebSocket reconnecting (attempt 4/5) sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:20] ERROR: WebSocket max reconnection attempts reached sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:20] ERROR: Live feed unavailable - switching to polling fallback sessionId=sess-7a2f requestId=req-007
+[2026-03-20 14:02:25] WARN: Polling fallback is 10x slower than WebSocket feed
+[2026-03-20 14:02:30] INFO: Polling data from REST API sessionId=sess-9c4d requestId=req-008
+[2026-03-20 14:03:00] ERROR: PostgreSQL connection timeout after 30s requestId=req-009
+[2026-03-20 14:03:01] ERROR: Cannot process event update: database unavailable requestId=req-009
+[2026-03-20 14:03:05] WARN: Connection pool exhausted (10/10 connections in use) requestId=req-010
+[2026-03-20 14:03:10] INFO: PostgreSQL connection recovered requestId=req-011
+[2026-03-20 14:03:15] INFO: Processing backlog: 47 queued event updates sessionId=sess-9c4d requestId=req-012
+[2026-03-20 14:04:00] INFO: Health check passed: db=ok redis=ok ws=polling
+[2026-03-20 14:05:00] INFO: Processed 892 events in last 5 minutes

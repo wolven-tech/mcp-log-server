@@ -26,20 +26,61 @@ LLMs waste tokens parsing raw log files. A 10 MB log dumped into a context windo
 | Tool | Description |
 |------|-------------|
 | `list_logs` | List all available log files with size and modification time |
-| `tail_log` | Get the last N lines from a log file |
-| `search_logs` | Regex search with optional context lines |
-| `get_errors` | Extract ERROR, FATAL, WARN, and exception lines |
-| `log_stats` | Line count, error count, warn count, file size — without reading content |
+| `tail_log` | Get the last N lines from a log file (supports `since` filtering) |
+| `search_logs` | Regex search with optional context lines, field-specific JSON search, and time range filtering |
+| `get_errors` | Extract error/warning lines with configurable severity level, exclude patterns, and time range |
+| `log_stats` | Line count, error/warn/fatal counts, file size — auto-detects JSON format |
+| `time_range` | Get earliest and latest timestamps in a log file with human-readable span |
+| `correlate` | Search for a correlation ID across ALL log files, returns unified timeline |
+| `trace_ids` | Discover unique values for a correlation field with counts and time ranges |
 | `all_errors` | Aggregate errors across ALL log files at once |
 
 ---
 
-## Quick Start
+## Quick Install
 
-### Docker (Recommended)
+The fastest way to get started — no clone required. The setup script pulls the Docker image from GHCR, creates a log directory, detects your MCP client, and writes the config file:
 
 ```bash
-docker build -t mcp-log-server .
+curl -fsSL https://raw.githubusercontent.com/wolven-tech/mcp-log-server/main/setup.sh | bash
+```
+
+Or clone first and run locally:
+
+```bash
+git clone https://github.com/wolven-tech/mcp-log-server.git
+cd mcp-log-server
+./setup.sh
+```
+
+The script supports several options:
+
+```
+./setup.sh --non-interactive             # Accept all defaults
+./setup.sh --log-dir=/var/log/myapp      # Custom log directory
+./setup.sh --client=cursor --scope=global  # Specific client and scope
+./setup.sh --from-source                 # Build from Elixir source instead of Docker
+```
+
+**For teams:** Copy `.mcp.json.example` into your project root as `.mcp.json` so every contributor gets the MCP server pre-configured. The example uses the published GHCR image (`ghcr.io/wolven-tech/mcp-log-server:latest`), so no local build is needed.
+
+**Makefile snippet** for CI or team onboarding:
+
+```makefile
+mcp-log-setup:
+	docker pull ghcr.io/wolven-tech/mcp-log-server:latest
+	mkdir -p ./tmp/logs
+	@echo "MCP Log Server image pulled. Log dir ready at ./tmp/logs"
+```
+
+---
+
+## Manual Setup
+
+### Docker
+
+```bash
+docker pull ghcr.io/wolven-tech/mcp-log-server:latest
 ```
 
 Add to your project's `.mcp.json`:
@@ -52,7 +93,7 @@ Add to your project's `.mcp.json`:
       "args": [
         "run", "--rm", "-i",
         "-v", "/tmp/mcp-logs:/tmp/mcp-logs",
-        "mcp-log-server:latest"
+        "ghcr.io/wolven-tech/mcp-log-server:latest"
       ],
       "type": "stdio"
     }
@@ -145,9 +186,13 @@ Each layer has a single responsibility. The domain layer (`LogReader`) contains 
 | Document | Description |
 |----------|-------------|
 | [Quick Start](docs/getting-started/QUICK_START.md) | Get running in 5 minutes |
-| [Use Case: Monorepo](docs/guides/USE_CASE_MONOREPO.md) | Full integration walkthrough |
+| [Examples Walkthrough](examples/README.md) | Step-by-step debugging of a real incident using all 9 tools |
+| [Use Case: Monorepo](docs/guides/USE_CASE_MONOREPO.md) | Multi-service monorepo integration |
+| [Use Case: Incident Response](docs/guides/USE_CASE_INCIDENT_RESPONSE.md) | Production incident triage workflow |
+| [Use Case: GCP Cloud Logging](docs/guides/USE_CASE_GCP_LOGS.md) | Working with GCP log exports |
+| [Log Structuring Guide](docs/guides/LOG_STRUCTURING.md) | Structure your logs for maximum MCP tool value |
 | [MCP Client Setup](docs/guides/MCP_CLIENT_SETUP.md) | Configure Claude Code and other MCP clients |
-| [Tool Reference](docs/reference/TOOLS.md) | Complete tool API reference |
+| [Tool Reference](docs/reference/TOOLS.md) | Complete tool API reference (9 tools) |
 | [TOON Format](docs/concepts/TOON_FORMAT.md) | Token-Oriented Object Notation specification |
 | [Architecture](docs/concepts/ARCHITECTURE.md) | Design decisions and module breakdown |
 | [Contributing](docs/CONTRIBUTING.md) | How to contribute |

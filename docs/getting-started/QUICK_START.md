@@ -20,26 +20,68 @@ Get MCP Log Server running and connected to Claude Code in 5 minutes.
 - Docker (recommended) **or** Elixir 1.17+ with Erlang/OTP 27+
 - An MCP-compatible client (Claude Code, Cursor, etc.)
 
-## Step 1: Build the Server
+## Recommended: Automated Setup
 
-### Option A: Docker
+The `setup.sh` script handles everything — pulls the Docker image from GHCR, creates a log directory, detects your MCP client, and writes the config file.
+
+**No clone required** (uses the published image at `ghcr.io/wolven-tech/mcp-log-server:latest`):
 
 ```bash
-git clone https://github.com/your-org/mcp-log-server.git
+curl -fsSL https://raw.githubusercontent.com/wolven-tech/mcp-log-server/main/setup.sh | bash
+```
+
+Or if you already cloned the repo:
+
+```bash
+./setup.sh
+```
+
+The script accepts several options:
+
+| Flag | Description |
+|------|-------------|
+| `--non-interactive` | Accept all defaults without prompting |
+| `--log-dir=PATH` | Set the log directory (default: `./tmp/logs`) |
+| `--client=CLIENT` | Force a specific client: `claude-code`, `cursor`, `vscode` |
+| `--scope=SCOPE` | Config scope: `project` (default) or `global` |
+| `--from-source` | Build from Elixir source instead of pulling the Docker image |
+
+After setup completes, skip ahead to [Use It](#step-4-use-it) below.
+
+**For teams:** Copy `.mcp.json.example` from the repo root into your project as `.mcp.json` so every contributor gets the MCP server pre-configured without running setup individually.
+
+---
+
+## Manual Setup
+
+If you prefer to set things up by hand, follow these steps.
+
+### Step 1: Get the Server
+
+#### Option A: Docker (pull from GHCR)
+
+```bash
+docker pull ghcr.io/wolven-tech/mcp-log-server:latest
+```
+
+#### Option B: Docker (build locally)
+
+```bash
+git clone https://github.com/wolven-tech/mcp-log-server.git
 cd mcp-log-server
 docker build -t mcp-log-server .
 ```
 
-### Option B: From Source
+#### Option C: From Source
 
 ```bash
-git clone https://github.com/your-org/mcp-log-server.git
+git clone https://github.com/wolven-tech/mcp-log-server.git
 cd mcp-log-server
 mix deps.get
 mix compile
 ```
 
-## Step 2: Prepare Log Files
+### Step 2: Prepare Log Files
 
 The server reads `.log` files from a directory you specify. Create a test log:
 
@@ -53,11 +95,11 @@ echo "2026-03-18 10:00:00 INFO: Server started on port 3000
 2026-03-18 10:05:00 ERROR: ECONNREFUSED to redis:6379" > /tmp/mcp-logs/app.log
 ```
 
-## Step 3: Configure Your MCP Client
+### Step 3: Configure Your MCP Client
 
 Create `.mcp.json` in your project root:
 
-### Docker
+#### Docker
 
 ```json
 {
@@ -67,7 +109,7 @@ Create `.mcp.json` in your project root:
       "args": [
         "run", "--rm", "-i",
         "-v", "/tmp/mcp-logs:/tmp/mcp-logs",
-        "mcp-log-server:latest"
+        "ghcr.io/wolven-tech/mcp-log-server:latest"
       ],
       "type": "stdio"
     }
@@ -75,7 +117,7 @@ Create `.mcp.json` in your project root:
 }
 ```
 
-### From Source
+#### From Source
 
 ```json
 {
@@ -88,6 +130,8 @@ Create `.mcp.json` in your project root:
   }
 }
 ```
+
+---
 
 ## Step 4: Use It
 
@@ -110,6 +154,7 @@ Claude> [calls search_logs with pattern="redis" context=2]
 
 ## What's Next
 
+- [Log Structuring Guide](../guides/LOG_STRUCTURING.md) — structure your logs for maximum MCP tool value (fewer false positives, cross-service correlation)
 - [Tool Reference](../reference/TOOLS.md) — see all available tools and their parameters
 - [MCP Client Setup](../guides/MCP_CLIENT_SETUP.md) — detailed configuration for different clients
 - [Use Case: Monorepo](../guides/USE_CASE_MONOREPO.md) — real-world integration example

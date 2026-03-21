@@ -1,0 +1,20 @@
+[2026-03-20 14:00:00] INFO: Recommendation service started on port 5503
+[2026-03-20 14:00:01] INFO: Loading embedding model: all-MiniLM-L6-v2
+[2026-03-20 14:00:03] INFO: Vector database connected (collection: event_embeddings)
+[2026-03-20 14:00:05] INFO: Embedding model loaded, dimension=384
+[2026-03-20 14:00:10] INFO: Generating embeddings for 4856 events sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:00:15] INFO: Batch 1/10: 486 embeddings generated (1.2s) sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:00:20] INFO: Batch 2/10: 486 embeddings generated (1.1s) sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:00:25] INFO: Batch 3/10: 486 embeddings generated (1.3s) sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:01:00] WARN: Vector upsert slow: 486 vectors in 3.2s (threshold: 2s) sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:01:05] INFO: Batch 4/10: 486 embeddings generated (1.0s) sessionId=sess-7a2f requestId=req-001
+[2026-03-20 14:02:15] ERROR: Vector database connection lost: ECONNREFUSED 10.0.0.5:6333 sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:16] ERROR: All 4690 embeddings failed - vector database unavailable sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:02:17] WARN: Embedding pipeline halted, queuing incoming events sessionId=sess-9c4d requestId=req-008
+[2026-03-20 14:02:30] INFO: Vector database reconnecting (attempt 1/3)
+[2026-03-20 14:02:35] INFO: Vector database reconnected successfully
+[2026-03-20 14:02:36] INFO: Replaying 4690 failed embeddings sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:03:00] INFO: Replay complete: 4690/4690 embeddings upserted sessionId=sess-7a2f requestId=req-006
+[2026-03-20 14:03:05] INFO: Processing queued events: 12 pending sessionId=sess-9c4d requestId=req-012
+[2026-03-20 14:04:00] INFO: Similarity search: query="election outcome" top_k=10 latency=45ms sessionId=sess-9c4d requestId=req-013
+[2026-03-20 14:05:00] INFO: Embedding pipeline healthy: 5542 vectors indexed, 0 pending
