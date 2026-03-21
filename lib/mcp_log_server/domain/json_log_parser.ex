@@ -25,6 +25,10 @@ defmodule McpLogServer.Domain.JsonLogParser do
   - `_severity` - normalized severity string (lowercase)
   - `_message` - extracted message
   - `_timestamp` - extracted timestamp (ISO 8601 string)
+
+  Note: For `:json_array`, the entire file must be loaded into memory to parse
+  the JSON array. For large files, prefer `:json_lines` (NDJSON) format and
+  use `stream_entries/2` for memory-efficient processing.
   """
   @spec parse_entries(String.t(), :json_lines | :json_array) ::
           {:ok, [map()]} | {:error, String.t()}
@@ -35,6 +39,35 @@ defmodule McpLogServer.Domain.JsonLogParser do
 
       {:error, reason} ->
         {:error, "Failed to read file: #{reason}"}
+    end
+  end
+
+  @doc """
+  Stream enriched JSON entries from an NDJSON file one at a time.
+
+  Returns a stream of `{enriched_map, line_number}` tuples. Memory usage
+  is constant regardless of file size. Only works for `:json_lines` format.
+
+  For `:json_array`, falls back to `parse_entries/2` (full memory load required).
+  """
+  @spec stream_entries(String.t(), :json_lines | :json_array) :: Enumerable.t()
+  def stream_entries(path, :json_lines) do
+    path
+    |> File.stream!()
+    |> Stream.map(&String.trim_trailing/1)
+    |> Stream.with_index(1)
+    |> Stream.flat_map(fn {line, idx} ->
+      case Jason.decode(line) do
+        {:ok, map} when is_map(map) -> [{enrich(map), idx}]
+        _ -> []
+      end
+    end)
+  end
+
+  def stream_entries(path, :json_array) do
+    case parse_entries(path, :json_array) do
+      {:ok, entries} -> entries |> Enum.with_index(1) |> Stream.map(& &1)
+      {:error, _} -> Stream.map([], & &1)
     end
   end
 

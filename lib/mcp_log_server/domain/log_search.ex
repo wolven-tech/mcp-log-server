@@ -38,7 +38,7 @@ defmodule McpLogServer.Domain.LogSearch do
     since = parse_time_opt(Keyword.get(opts, :since))
     until_dt = parse_time_opt(Keyword.get(opts, :until))
 
-    with {:ok, path} <- FileAccess.resolve(log_dir, file),
+    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file),
          {:ok, regex} <- compile_pattern(pattern) do
       format = FormatDetector.detect(path)
 
@@ -90,36 +90,29 @@ defmodule McpLogServer.Domain.LogSearch do
 
   @doc false
   def search_json_field(path, format, regex, pattern, field, max_results, since, until_dt) do
-    case JsonLogParser.parse_entries(path, format) do
-      {:ok, entries} ->
-        keys = String.split(field, ".")
+    keys = String.split(field, ".")
 
-        matches =
-          entries
-          |> Enum.with_index(1)
-          |> Enum.filter(fn {entry, _idx} ->
-            value = get_in(entry, keys)
+    matches =
+      JsonLogParser.stream_entries(path, format)
+      |> Stream.filter(fn {entry, _idx} ->
+        value = get_in(entry, keys)
 
-            TimeFilter.in_range?(entry, since, until_dt) and
-              value != nil and
-              Regex.match?(regex, to_string(value))
-          end)
-          |> Enum.take(max_results)
-          |> Enum.map(fn {entry, idx} ->
-            JsonLogParser.json_entry_to_toon_map(entry, idx)
-          end)
+        TimeFilter.in_range?(entry, since, until_dt) and
+          value != nil and
+          Regex.match?(regex, to_string(value))
+      end)
+      |> Enum.take(max_results)
+      |> Enum.map(fn {entry, idx} ->
+        JsonLogParser.json_entry_to_toon_map(entry, idx)
+      end)
 
-        {:ok,
-         %{
-           file: Path.basename(path),
-           pattern: pattern,
-           returned_matches: length(matches),
-           matches: matches
-         }}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    {:ok,
+     %{
+       file: Path.basename(path),
+       pattern: pattern,
+       returned_matches: length(matches),
+       matches: matches
+     }}
   end
 
   @doc "Compile a regex pattern (case-insensitive)."

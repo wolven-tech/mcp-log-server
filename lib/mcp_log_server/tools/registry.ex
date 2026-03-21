@@ -13,7 +13,8 @@ defmodule McpLogServer.Tools.Registry do
     McpLogServer.Tools.TimeRange,
     McpLogServer.Tools.CorrelateTool,
     McpLogServer.Tools.TraceIds,
-    McpLogServer.Tools.AllErrors
+    McpLogServer.Tools.AllErrors,
+    McpLogServer.Tools.SyncLogs
   ]
 
   @tool_map Map.new(@tools, fn mod -> {mod.name(), mod} end)

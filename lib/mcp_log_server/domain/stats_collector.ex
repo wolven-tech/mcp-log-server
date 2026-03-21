@@ -69,24 +69,23 @@ defmodule McpLogServer.Domain.StatsCollector do
 
   @doc false
   def get_stats_json(path, format) do
-    case JsonLogParser.parse_entries(path, format) do
-      {:ok, entries} ->
-        Enum.reduce(entries, {0, 0, 0, 0}, fn entry, {lines, errors, warns, fatals} ->
-          severity = entry["_severity"]
+    try do
+      JsonLogParser.stream_entries(path, format)
+      |> Enum.reduce({0, 0, 0, 0}, fn {entry, _idx}, {lines, errors, warns, fatals} ->
+        severity = entry["_severity"]
 
-          {
-            lines + 1,
-            if(severity in @json_error_severities and severity not in @json_fatal_severities,
-              do: errors + 1,
-              else: errors
-            ),
-            if(severity == "warn" or severity == "warning", do: warns + 1, else: warns),
-            if(severity in @json_fatal_severities, do: fatals + 1, else: fatals)
-          }
-        end)
-
-      {:error, _} ->
-        get_stats_plain(path)
+        {
+          lines + 1,
+          if(severity in @json_error_severities and severity not in @json_fatal_severities,
+            do: errors + 1,
+            else: errors
+          ),
+          if(severity == "warn" or severity == "warning", do: warns + 1, else: warns),
+          if(severity in @json_fatal_severities, do: fatals + 1, else: fatals)
+        }
+      end)
+    rescue
+      _ -> get_stats_plain(path)
     end
   end
 end

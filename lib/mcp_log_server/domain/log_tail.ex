@@ -19,7 +19,7 @@ defmodule McpLogServer.Domain.LogTail do
   def tail(log_dir, file, n, opts \\ []) do
     since = parse_time_opt(Keyword.get(opts, :since))
 
-    with {:ok, path} <- FileAccess.resolve(log_dir, file) do
+    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file) do
       content =
         path
         |> File.stream!()

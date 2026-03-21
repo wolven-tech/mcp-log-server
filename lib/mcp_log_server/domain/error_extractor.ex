@@ -46,7 +46,7 @@ defmodule McpLogServer.Domain.ErrorExtractor do
     since = parse_time_opt(Keyword.get(opts, :since))
     until_dt = parse_time_opt(Keyword.get(opts, :until))
 
-    with {:ok, path} <- FileAccess.resolve(log_dir, file),
+    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file),
          {:ok, exclude_regex} <- compile_exclude(exclude_str) do
       FormatDispatch.dispatch(
         path,
@@ -93,30 +93,24 @@ defmodule McpLogServer.Domain.ErrorExtractor do
   def get_errors_json(path, format, max_lines, level, exclude_regex, since, until_dt) do
     threshold = Patterns.level_value(level)
 
-    case JsonLogParser.parse_entries(path, format) do
-      {:ok, entries} ->
-        errors =
-          entries
-          |> Enum.with_index(1)
-          |> Enum.filter(fn {entry, _idx} ->
-            severity = entry["_severity"]
-            atom_level = Map.get(@json_severity_to_atom, severity)
+    errors =
+      JsonLogParser.stream_entries(path, format)
+      |> Stream.filter(fn {entry, _idx} ->
+        severity = entry["_severity"]
+        atom_level = Map.get(@json_severity_to_atom, severity)
 
-            TimeFilter.in_range?(entry, since, until_dt) and
-              atom_level != nil and
-              Patterns.level_value(atom_level) >= threshold and
-              not excluded?(entry["_message"] || "", exclude_regex)
-          end)
-          |> Enum.take(-max_lines)
-          |> Enum.map(fn {entry, idx} ->
-            JsonLogParser.json_entry_to_toon_map(entry, idx)
-          end)
+        TimeFilter.in_range?(entry, since, until_dt) and
+          atom_level != nil and
+          Patterns.level_value(atom_level) >= threshold and
+          not excluded?(entry["_message"] || "", exclude_regex)
+      end)
+      |> Enum.to_list()
+      |> Enum.take(-max_lines)
+      |> Enum.map(fn {entry, idx} ->
+        JsonLogParser.json_entry_to_toon_map(entry, idx)
+      end)
 
-        {:ok, errors}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    {:ok, errors}
   end
 
   defp parse_time_opt(nil), do: nil

@@ -17,7 +17,7 @@ defmodule McpLogServer.Domain.TimeRangeCalc do
   """
   @spec time_range(String.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
   def time_range(log_dir, file) do
-    with {:ok, path} <- FileAccess.resolve(log_dir, file) do
+    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file) do
       format = FormatDetector.detect(path)
 
       # Stream to count lines and capture first/last 10 without loading entire file
