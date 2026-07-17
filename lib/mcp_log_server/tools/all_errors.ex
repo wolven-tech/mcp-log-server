@@ -3,9 +3,9 @@ defmodule McpLogServer.Tools.AllErrors do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.FileAccess
-  alias McpLogServer.Domain.ErrorExtractor
+  alias McpLogServer.Domain.Omissions
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -13,16 +13,25 @@ defmodule McpLogServer.Tools.AllErrors do
 
   @impl true
   def description,
-    do: "Get errors from ALL log files at once. Best first call for health overview. Always returns TOON format. Tip: Use JSON structured logs with a severity field to eliminate false positives — see docs/guides/LOG_STRUCTURING.md."
+    do:
+      "Get errors from ALL log files at once. Best first call for health overview. Always returns TOON format. " <>
+        "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since; " <>
+        "the unparsed_ts count in the result reveals when filtering was degraded this way. " <>
+        "If any bound was hit (per-file cap, oversized-file skip), the result carries an omissions " <>
+        "block naming exactly what was withheld — absent when you saw everything. " <>
+        "With rollup: true, errors are collapsed into message templates with count, instances_seen " <>
+        "(e.g. \"1/9\"), and first/last timestamps. " <>
+        "Tip: Use JSON structured logs with a severity field to eliminate false positives — see docs/guides/LOG_STRUCTURING.md."
 
   @impl true
   def schema do
     %{
       type: "object",
       properties: %{
-        lines: %{type: "integer", description: "Max errors per file (default: 20)", default: 20},
+        lines: %{type: "integer", description: "Max errors per file (default: 20). Not used in rollup mode", default: 20},
         level: %{type: "string", enum: ["fatal", "error", "warn", "info"], description: "Minimum severity level (default: warn)"},
         exclude: %{type: "string", description: "Regex pattern — lines matching this are excluded from results"},
+        rollup: %{type: "boolean", description: "Collapse errors into message templates with count, instances_seen, first/last timestamps (default: false)", default: false},
         since: %{type: "string", description: "Only include errors from this time onward. ISO 8601 or relative shorthand (e.g. \"1h\")"}
       },
       required: []
@@ -44,38 +53,34 @@ defmodule McpLogServer.Tools.AllErrors do
       exclude when is_binary(exclude) -> Keyword.put(opts, :exclude, exclude)
       _ -> opts
     end
+    opts = if Map.get(args, "rollup") == true, do: Keyword.put(opts, :rollup, true), else: opts
     opts = maybe_add_time_opts(opts, args)
 
-    {:ok, files} = FileAccess.list_files(log_dir)
+    case UseCases.AllErrors.run(log_dir, lines_per_file, opts) do
+      {:ok, %{rollup: true} = result} ->
+        {:ok, ResponseFormatter.format(:rollup, result, nil)}
 
-    {results, skipped} =
-      Enum.reduce(files, {[], []}, fn %{name: name} = file_info, {res, skip} ->
-        case FileAccess.check_size(file_info.path) do
-          {:error, _} ->
-            size_mb = Float.round(file_info.size_bytes / 1_048_576, 1)
-            max_mb = Application.get_env(:mcp_log_server, :max_log_file_mb, 100)
-            {res, skip ++ ["--- skipped: #{name} (#{size_mb} MB exceeds #{max_mb} MB limit) ---"]}
+      {:ok, %{results: results, unparsed_ts: unparsed_ts, omissions: omissions}} ->
+        output = ResponseFormatter.format(:multi_file_errors, results)
 
-          {:ok, _} ->
-            case ErrorExtractor.get_errors(log_dir, name, lines_per_file, opts) do
-              {:ok, errors} when errors != [] ->
-                {res ++ [%{file: name, error_count: length(errors), matches: errors}], skip}
+        output =
+          if unparsed_ts != nil do
+            output <> "\n\n# unparsed_ts: #{unparsed_ts}"
+          else
+            output
+          end
 
-              _ ->
-                {res, skip}
-            end
-        end
-      end)
+        output =
+          if Omissions.empty?(omissions) do
+            output
+          else
+            output <> "\n\n# omissions: #{Jason.encode!(omissions)}"
+          end
 
-    output = ResponseFormatter.format(:multi_file_errors, results)
+        {:ok, output}
 
-    output =
-      if skipped != [] do
-        output <> "\n\n" <> Enum.join(skipped, "\n")
-      else
-        output
-      end
-
-    {:ok, output}
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 end

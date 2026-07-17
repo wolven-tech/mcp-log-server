@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.TailLog do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.LogTail
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -12,7 +12,15 @@ defmodule McpLogServer.Tools.TailLog do
 
   @impl true
   def description,
-    do: "Get the last N lines from a log file. Use this to see recent output."
+    do:
+      "Get the last N lines from a log file. Use this to see recent output. " <>
+        "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since; " <>
+        "the unparsed_ts count in the result reveals when filtering was degraded this way. " <>
+        "If older lines exist beyond the cap, the result carries an omissions block saying how " <>
+        "many were withheld — absent when the whole file fit. " <>
+        "Every result carries an opaque cursor; pass it back to receive ONLY lines appended since " <>
+        "(polling a live deploy without re-reading the window). If the file was rotated or " <>
+        "truncated the cursor is invalid and the result is a flagged full window (cursor_reset: true)."
 
   @impl true
   def schema do
@@ -22,6 +30,7 @@ defmodule McpLogServer.Tools.TailLog do
         file: %{type: "string", description: "Log file name (e.g., api.log)"},
         lines: %{type: "integer", description: "Number of lines (default: 50)", default: 50},
         since: %{type: "string", description: "Only include lines from this time onward. ISO 8601 or relative shorthand (e.g. \"30m\", \"2h\", \"1d\")"},
+        cursor: %{type: "string", description: "Opaque cursor from a previous call; returns only lines appended since, plus a fresh cursor"},
         format: %{type: "string", enum: ["toon", "json"], description: "Output format (default: toon)"}
       },
       required: ["file"]
@@ -35,9 +44,25 @@ defmodule McpLogServer.Tools.TailLog do
     format = Map.get(args, "format")
     opts = maybe_add_time_opts([], args)
 
-    case LogTail.tail(log_dir, file, lines, opts) do
-      {:ok, content} ->
-        {:ok, ResponseFormatter.format(:tail, %{file: file, lines: lines, content: content}, format)}
+    opts =
+      case Map.get(args, "cursor") do
+        c when is_binary(c) and c != "" -> Keyword.put(opts, :cursor, c)
+        _ -> opts
+      end
+
+    case UseCases.TailLog.run(log_dir, file, lines, opts) do
+      {:ok, %{content: content, unparsed_ts: unparsed_ts, omissions: omissions} = result} ->
+        data = %{file: file, lines: lines, content: content, cursor: result.cursor}
+        data = if unparsed_ts != nil, do: Map.put(data, :unparsed_ts, unparsed_ts), else: data
+        data = if result.cursor_reset, do: Map.put(data, :cursor_reset, true), else: data
+
+        data =
+          case Map.get(result, :index_used) do
+            nil -> data
+            used -> Map.put(data, :index_used, used)
+          end
+        data = McpLogServer.Domain.Omissions.attach(data, omissions)
+        {:ok, ResponseFormatter.format(:tail, data, format)}
 
       {:error, reason} ->
         {:error, reason}

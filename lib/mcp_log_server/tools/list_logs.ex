@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.ListLogs do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.FileAccess
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
 
   @impl true
   def name, do: "list_logs"
@@ -19,7 +19,7 @@ defmodule McpLogServer.Tools.ListLogs do
 
   @impl true
   def execute(_args, log_dir) do
-    case FileAccess.list_files(log_dir) do
+    case UseCases.ListLogs.run(log_dir) do
       {:ok, files} -> {:ok, ResponseFormatter.format(:entries, files)}
     end
   end

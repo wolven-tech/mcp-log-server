@@ -2,6 +2,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
   use ExUnit.Case, async: true
 
   alias McpLogServer.Domain.JsonLogParser
+  alias McpLogServer.Infrastructure.FileLogSource
 
   @tmp_dir System.tmp_dir!() |> Path.join("json_log_parser_test")
 
@@ -36,7 +37,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
   describe "parse_entries/2 with json_lines" do
     test "parses GCP Cloud Logging entries" do
       path = write_file("gcp.log", @gcp_sample)
-      {:ok, entries} = JsonLogParser.parse_entries(path, :json_lines)
+      {:ok, entries} = FileLogSource.parse_entries(path, :json_lines)
 
       assert length(entries) == 3
 
@@ -54,7 +55,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
 
     test "parses Pino entries with numeric levels and epoch timestamps" do
       path = write_file("pino.log", @pino_sample)
-      {:ok, entries} = JsonLogParser.parse_entries(path, :json_lines)
+      {:ok, entries} = FileLogSource.parse_entries(path, :json_lines)
 
       assert length(entries) == 3
 
@@ -75,7 +76,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
       content = ~s|[{"level":"info","message":"hello"},{"level":"warn","message":"watch out"}]|
       path = write_file("array.log", content)
 
-      {:ok, entries} = JsonLogParser.parse_entries(path, :json_array)
+      {:ok, entries} = FileLogSource.parse_entries(path, :json_array)
 
       assert length(entries) == 2
       assert hd(entries)["_severity"] == "info"
@@ -84,7 +85,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
 
     test "returns error for invalid JSON array" do
       path = write_file("bad.log", "not json")
-      assert {:error, _} = JsonLogParser.parse_entries(path, :json_array)
+      assert {:error, _} = FileLogSource.parse_entries(path, :json_array)
     end
   end
 
@@ -178,7 +179,7 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
 
   describe "parse_entries/2 edge cases" do
     test "returns error for non-existent file" do
-      assert {:error, _} = JsonLogParser.parse_entries("/nonexistent/path.log", :json_lines)
+      assert {:error, _} = FileLogSource.parse_entries("/nonexistent/path.log", :json_lines)
     end
 
     test "skips non-JSON lines in json_lines mode" do
@@ -189,13 +190,13 @@ defmodule McpLogServer.Domain.JsonLogParserTest do
       """
 
       path = write_file("mixed.log", content)
-      {:ok, entries} = JsonLogParser.parse_entries(path, :json_lines)
+      {:ok, entries} = FileLogSource.parse_entries(path, :json_lines)
       assert length(entries) == 2
     end
 
     test "preserves original fields alongside extracted ones" do
       path = write_file("fields.log", ~s|{"level":"info","message":"hi","custom":"data"}|)
-      {:ok, [entry]} = JsonLogParser.parse_entries(path, :json_lines)
+      {:ok, [entry]} = FileLogSource.parse_entries(path, :json_lines)
       assert entry["custom"] == "data"
       assert entry["_severity"] == "info"
     end

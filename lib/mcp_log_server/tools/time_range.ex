@@ -3,15 +3,19 @@ defmodule McpLogServer.Tools.TimeRange do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.TimeRangeCalc
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
 
   @impl true
   def name, do: "time_range"
 
   @impl true
   def description,
-    do: "Get the earliest and latest timestamps in a log file, plus the time span. Works with plain text and JSON logs."
+    do:
+      "Get the earliest and latest timestamps in a log file, plus the time span. Works with plain text and JSON logs. " <>
+        "Also reports ts_parse_ratio/ts_parse_sample over the sampled lines. " <>
+        "A low ratio means since/until filters on this file are unreliable (fail-open includes unparseable lines); " <>
+        "declare the file's format via LOG_TS_FORMATS to fix it."
 
   @impl true
   def schema do
@@ -28,7 +32,7 @@ defmodule McpLogServer.Tools.TimeRange do
   def execute(args, log_dir) do
     file = Map.get(args, "file", "")
 
-    case TimeRangeCalc.time_range(log_dir, file) do
+    case UseCases.TimeRange.run(log_dir, file) do
       {:ok, range} -> {:ok, ResponseFormatter.format(:stats, range)}
       {:error, reason} -> {:error, reason}
     end

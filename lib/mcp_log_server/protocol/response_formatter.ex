@@ -15,7 +15,11 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
           | :error_results
           | :stats
           | :correlation
+          | :anchor_correlation
+          | :aggregate
           | :multi_file_errors
+          | :rollup
+          | :summarize
 
   @doc """
   Format structured tool output into a string ready for the MCP response.
@@ -27,17 +31,63 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
   @spec format(shape(), term(), String.t() | nil) :: String.t()
   def format(shape, data, format_opt \\ nil)
 
-  # :entries — simple tabular list (list_logs, trace_ids)
+  # :entries — simple tabular list (list_logs, trace_ids). A map form
+  # carries metadata next to the rows (e.g. an omissions block); the meta
+  # line only appears when metadata is present, so complete results stay
+  # identical to the bare-list form.
   def format(:entries, items, _format_opt) when is_list(items) do
     ToonEncoder.format_response(%{entries: items})
   end
 
-  # :tail — raw content with a header line (tail_log)
-  def format(:tail, %{file: file, lines: lines, content: content}, format_opt) do
+  def format(:entries, %{entries: _} = data, format_opt) do
+    ToonEncoder.format_response(data, format_opt)
+  end
+
+  # :tail — raw content with a header line (tail_log). When a time filter
+  # was active, `unparsed_ts` (lines that passed the filter because their
+  # timestamp could not be parsed — fail-open) is appended to the header.
+  # When the line cap was hit, the omissions block is appended too — a
+  # truncated tail must say so. The polling cursor rides in the header
+  # (`# cursor: ...`), with `# cursor_reset: true` when a stale cursor
+  # forced a full window.
+  def format(:tail, %{file: file, lines: lines, content: content} = data, format_opt) do
+    unparsed_ts = Map.get(data, :unparsed_ts)
+    omissions = Map.get(data, :omissions)
+    cursor = Map.get(data, :cursor)
+    cursor_reset = Map.get(data, :cursor_reset)
+    index_used = Map.get(data, :index_used)
+
     if format_opt == "json" do
-      Jason.encode!(%{file: file, lines: lines, content: content})
+      payload = %{file: file, lines: lines, content: content}
+
+      payload =
+        if unparsed_ts != nil, do: Map.put(payload, :unparsed_ts, unparsed_ts), else: payload
+
+      payload = if cursor != nil, do: Map.put(payload, :cursor, cursor), else: payload
+
+      payload =
+        if cursor_reset != nil, do: Map.put(payload, :cursor_reset, cursor_reset), else: payload
+
+      payload =
+        if index_used != nil, do: Map.put(payload, :index_used, index_used), else: payload
+
+      payload = if omissions != nil, do: Map.put(payload, :omissions, omissions), else: payload
+
+      Jason.encode!(payload)
     else
-      "# tail #{file} (last #{lines} lines)\n#{content}"
+      header = "# tail #{file} (last #{lines} lines)"
+      header = if unparsed_ts != nil, do: header <> "\n# unparsed_ts: #{unparsed_ts}", else: header
+      header = if cursor_reset != nil, do: header <> "\n# cursor_reset: true", else: header
+      header = if index_used != nil, do: header <> "\n# index_used: #{index_used}", else: header
+
+      header =
+        if omissions != nil,
+          do: header <> "\n# omissions: #{Jason.encode!(omissions)}",
+          else: header
+
+      header = if cursor != nil, do: header <> "\n# cursor: #{cursor}", else: header
+
+      "#{header}\n#{content}"
     end
   end
 
@@ -56,19 +106,117 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
     Jason.encode!(map)
   end
 
-  # :correlation — timeline with meta (correlate)
+  # :correlation — timeline with meta (correlate). The omissions block
+  # rides in the meta line only when the match cap was actually hit.
   def format(:correlation, result, format_opt) do
     if format_opt == "json" do
       Jason.encode!(result)
     else
-      meta = Jason.encode!(%{
+      meta_map = %{
         value: result.value,
         total_matches: result.total_matches,
-        files_matched: result.files_matched
-      })
+        files_matched: result.files_matched,
+        unparsed_ts: Map.get(result, :unparsed_ts, 0)
+      }
+
+      meta_map =
+        case Map.get(result, :omissions) do
+          nil -> meta_map
+          omissions -> Map.put(meta_map, :omissions, omissions)
+        end
 
       toon = ToonEncoder.format_response(%{matches: result.timeline})
-      "# #{meta}\n#{toon}"
+      "# #{Jason.encode!(meta_map)}\n#{toon}"
+    end
+  end
+
+  # :anchor_correlation — one merged, time-sorted, source-tagged timeline
+  # per window section (anchor-mode correlate). Section boundaries are
+  # explicit `== window ... ==` headers so multiple anchor hits stay
+  # distinguishable; the meta line carries the honesty fields
+  # (anchors_unparsed_ts, unparsed_ts, omissions).
+  def format(:anchor_correlation, result, format_opt) do
+    if format_opt == "json" do
+      Jason.encode!(result)
+    else
+      meta_map =
+        result
+        |> Map.take([
+          :anchor,
+          :window,
+          :total_anchors,
+          :anchors_unparsed_ts,
+          :total_entries,
+          :files_matched,
+          :unparsed_ts,
+          :omissions
+        ])
+        |> Map.reject(fn {_k, v} -> v == nil end)
+
+      sections =
+        Enum.map_join(result.sections, "\n\n", fn section ->
+          "== window #{section.from} .. #{section.to} (#{section.anchor_count} anchor#{plural(section.anchor_count)}) ==\n" <>
+            ToonEncoder.format_response(%{entries: section.entries})
+        end)
+
+      body = if result.sections == [], do: "(no anchor windows)", else: sections
+      "# #{Jason.encode!(meta_map)}\n#{body}"
+    end
+  end
+
+  # :aggregate — op: values carries an :entries histogram (TOON table);
+  # exists/count are scalar maps and encode as JSON either way.
+  def format(:aggregate, %{entries: _} = result, format_opt) do
+    ToonEncoder.format_response(result, format_opt)
+  end
+
+  def format(:aggregate, result, _format_opt) do
+    Jason.encode!(result)
+  end
+
+  # :rollup — message-template rows with meta (search_logs / all_errors
+  # with rollup: true)
+  def format(:rollup, data, format_opt) do
+    ToonEncoder.format_response(data, format_opt)
+  end
+
+  # :summarize — window-vs-baseline diff (summarize). One meta line with
+  # the bounds, rates, and honesty fields, then one TOON section per list.
+  def format(:summarize, result, format_opt) do
+    if format_opt == "json" do
+      Jason.encode!(result)
+    else
+      meta =
+        result
+        |> Map.take([
+          :window,
+          :baseline,
+          :files_scanned,
+          :sources_seen,
+          :error_rate,
+          :unparsed_ts,
+          :index_used,
+          :omissions
+        ])
+        |> Map.reject(fn {_k, v} -> v == nil end)
+
+      sections =
+        [
+          {"new templates", result.new_templates},
+          {"gone templates", result.gone_templates},
+          {"volume by source", result.volume}
+        ]
+        |> Enum.map_join("\n\n", fn {title, rows} ->
+          body =
+            case rows do
+              [] -> "(none)"
+              rows -> ToonEncoder.format_response(%{entries: rows})
+            end
+
+          "== #{title} (#{length(rows)}) ==\n" <> body
+        end)
+
+      "# #{Jason.encode!(meta)}\n#{sections}"
     end
   end
 
@@ -83,4 +231,7 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
         ToonEncoder.format_response(%{matches: r.matches})
     end)
   end
+
+  defp plural(1), do: ""
+  defp plural(_), do: "s"
 end

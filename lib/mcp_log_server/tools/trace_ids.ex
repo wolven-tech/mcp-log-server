@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.TraceIds do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.Correlator
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2]
 
   @impl true
@@ -12,7 +12,11 @@ defmodule McpLogServer.Tools.TraceIds do
 
   @impl true
   def description,
-    do: "Discover unique values for a correlation field (e.g. sessionId, traceId) across log files. Returns values with count and time range."
+    do:
+      "Discover unique values for a correlation field (e.g. sessionId, traceId) across log files. " <>
+        "Returns values with count and time range. If the max_values cap was hit, the result " <>
+        "carries an omissions block saying how many values were withheld — absent when the list " <>
+        "is exhaustive."
 
   @impl true
   def schema do
@@ -36,7 +40,7 @@ defmodule McpLogServer.Tools.TraceIds do
     opts = [max_values: max_values]
     opts = if file, do: Keyword.put(opts, :file, file), else: opts
 
-    case Correlator.extract_trace_ids(log_dir, field, opts) do
+    case UseCases.TraceIds.run(log_dir, field, opts) do
       {:ok, results} ->
         {:ok, ResponseFormatter.format(:entries, results)}
     end

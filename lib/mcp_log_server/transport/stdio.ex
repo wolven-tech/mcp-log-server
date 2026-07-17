@@ -51,9 +51,13 @@ defmodule McpLogServer.Transport.Stdio do
   end
 
   @impl true
-  def handle_info({:stdin_eof}, _state) do
-    System.halt(0)
-    {:noreply, %{}}
+  def handle_info({:stdin_eof}, state) do
+    # Graceful stop (not halt): the supervision tree must shut down so
+    # streamed LOG_SOURCES workers can SIGTERM their external commands —
+    # stdin EOF is the normal way MCP clients terminate the server, and a
+    # hard halt would leak those child processes on every session end.
+    System.stop(0)
+    {:noreply, state}
   end
 
   defp read_loop do

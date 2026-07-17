@@ -84,6 +84,135 @@ defmodule McpLogServer.Domain.TimestampParserTest do
     end
   end
 
+  describe "extract/2 - time-only dev-server formats (issue #6)" do
+    @reference ~U[2026-03-20 15:00:00Z]
+
+    test "parses HH:MM:SS prefix against the reference date" do
+      dt = TimestampParser.extract("14:00:00 [vite] hmr update /src/App.tsx", reference: @reference)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "parses HH:MM:SS prefix with fractional seconds" do
+      dt = TimestampParser.extract("14:00:00.123 dev server ready", reference: @reference)
+      assert %DateTime{hour: 14, microsecond: {123_000, 3}} = dt
+      assert DateTime.to_date(dt) == ~D[2026-03-20]
+    end
+
+    test "parses bracketed [HH:MM:SS]" do
+      dt = TimestampParser.extract("[14:00:00] page reload src/main.ts", reference: @reference)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "parses [vite]-style tagged time" do
+      dt = TimestampParser.extract("[vite] 14:00:00 hmr update /src/App.tsx", reference: @reference)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "parses 12-hour clock with AM/PM" do
+      pm = TimestampParser.extract("2:00:00 PM [vite] hmr update", reference: @reference)
+      assert pm == ~U[2026-03-20 14:00:00Z]
+
+      am = TimestampParser.extract("9:30:00 AM [vite] page reload", reference: @reference)
+      assert am == ~U[2026-03-20 09:30:00Z]
+    end
+
+    test "strips ANSI color codes before matching" do
+      line = "\e[2m14:00:00\e[0m \e[36m[vite]\e[0m \e[32mhmr update\e[0m /src/App.tsx"
+      dt = TimestampParser.extract(line, reference: @reference)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "strips ANSI codes around bracketed dev-server tags" do
+      line = "\e[36m[vite]\e[0m \e[2m14:00:00\e[0m hmr update"
+      dt = TimestampParser.extract(line, reference: @reference)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "does not treat a mid-line time as a prefix timestamp" do
+      assert TimestampParser.extract("finished at 14:00:00 today", reference: @reference) == nil
+    end
+
+    test "midnight rollover: time later than reference shifts back one day" do
+      # File last modified 00:30; a 23:50 line must belong to the previous day.
+      reference = ~U[2026-03-21 00:30:00Z]
+
+      late = TimestampParser.extract("23:50:00 [vite] hmr update", reference: reference)
+      early = TimestampParser.extract("00:20:00 [vite] page reload", reference: reference)
+
+      assert late == ~U[2026-03-20 23:50:00Z]
+      assert early == ~U[2026-03-21 00:20:00Z]
+      # Ordering stays monotonic across the rollover
+      assert DateTime.compare(late, early) == :lt
+    end
+
+    test "defaults the reference to now for still-growing logs" do
+      one_min_ago = DateTime.add(DateTime.utc_now(), -60, :second)
+      clock = Calendar.strftime(one_min_ago, "%H:%M:%S")
+
+      dt = TimestampParser.extract("#{clock} [vite] hmr update")
+      assert_in_delta DateTime.diff(DateTime.utc_now(), dt, :second), 60, 3
+    end
+  end
+
+  describe "extract/2 - declared format precedence" do
+    test "declared format is tried before auto-detection" do
+      {:ok, epoch_ms} = McpLogServer.Domain.TsFormat.compile("epoch_ms")
+      # Auto-detect would pick the ISO stamp; the declared format must win.
+      line = "2026-03-20T14:00:00Z evt=1742479200123"
+
+      dt = TimestampParser.extract(line, format: epoch_ms)
+      assert DateTime.to_unix(dt, :millisecond) == 1_742_479_200_123
+    end
+
+    test "falls back to auto-detection when the declared format does not match" do
+      {:ok, epoch_ms} = McpLogServer.Domain.TsFormat.compile("epoch_ms")
+      dt = TimestampParser.extract("2026-03-20T14:00:00Z no epoch here", format: epoch_ms)
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+  end
+
+  describe "extract/2 - regression: existing formats unaffected by time-only support" do
+    test "full ISO still wins over time-only" do
+      dt = TimestampParser.extract("2026-03-20T14:00:00Z 09:00:00 weird trailer")
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "date-space-time still wins over time-only" do
+      dt = TimestampParser.extract("2026-03-20 14:00:00 ERROR at 09:00:00")
+      assert dt == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "syslog still wins over time-only" do
+      dt = TimestampParser.extract("Mar 20 14:00:00 myhost sshd[1234]: accepted")
+      assert %DateTime{month: 3, day: 20, hour: 14} = dt
+    end
+  end
+
+  describe "parse_json_value/2" do
+    test "parses ISO strings" do
+      assert TimestampParser.parse_json_value("2026-03-20T14:00:00Z") == ~U[2026-03-20 14:00:00Z]
+    end
+
+    test "returns nil for unparseable strings and non-timestamps" do
+      assert TimestampParser.parse_json_value("not a time") == nil
+      assert TimestampParser.parse_json_value(nil) == nil
+      assert TimestampParser.parse_json_value(%{}) == nil
+    end
+
+    test "parses integer epochs only with a declared epoch format" do
+      {:ok, epoch_ms} = McpLogServer.Domain.TsFormat.compile("epoch_ms")
+      {:ok, epoch_s} = McpLogServer.Domain.TsFormat.compile("epoch_s")
+
+      assert TimestampParser.parse_json_value(1_742_479_200_123) == nil
+
+      dt = TimestampParser.parse_json_value(1_742_479_200_123, format: epoch_ms)
+      assert DateTime.to_unix(dt, :millisecond) == 1_742_479_200_123
+
+      dt = TimestampParser.parse_json_value(1_742_479_200, format: epoch_s)
+      assert DateTime.to_unix(dt) == 1_742_479_200
+    end
+  end
+
   describe "parse_relative/1" do
     test "parses seconds" do
       dt = TimestampParser.parse_relative("30s")
