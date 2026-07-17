@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.TailLog do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.LogTail
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -35,7 +35,7 @@ defmodule McpLogServer.Tools.TailLog do
     format = Map.get(args, "format")
     opts = maybe_add_time_opts([], args)
 
-    case LogTail.tail(log_dir, file, lines, opts) do
+    case UseCases.TailLog.run(log_dir, file, lines, opts) do
       {:ok, content} ->
         {:ok, ResponseFormatter.format(:tail, %{file: file, lines: lines, content: content}, format)}
 

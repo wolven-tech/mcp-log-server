@@ -56,6 +56,57 @@ defmodule McpLogServer.Domain.ErrorExtractor do
     end
   end
 
+  @doc """
+  Filter an enumerable of `{line, index}` tuples down to error entries.
+
+  Pure over its input: applies time-range, severity, and exclusion filters,
+  keeps the last `max_lines` matches, and shapes them as log entries.
+  """
+  @spec filter_plain(Enumerable.t(), pos_integer(), atom(), Regex.t() | nil,
+          DateTime.t() | nil, DateTime.t() | nil) :: {:ok, [log_entry()]}
+  def filter_plain(indexed_lines, max_lines, level, exclude_regex, since, until_dt) do
+    errors =
+      indexed_lines
+      |> Stream.filter(fn {line, _idx} ->
+        TimeFilter.in_range?(line, since, until_dt) and
+          Patterns.matches_level?(line, level) and
+          not excluded?(line, exclude_regex)
+      end)
+      |> Enum.take(-max_lines)
+      |> Enum.map(fn {line, idx} -> %{line_number: idx, content: line} end)
+
+    {:ok, errors}
+  end
+
+  @doc """
+  Filter an enumerable of `{enriched_json_entry, index}` tuples down to
+  error entries, using the entry's extracted `_severity`.
+  """
+  @spec filter_json(Enumerable.t(), pos_integer(), atom(), Regex.t() | nil,
+          DateTime.t() | nil, DateTime.t() | nil) :: {:ok, [map()]}
+  def filter_json(entries, max_lines, level, exclude_regex, since, until_dt) do
+    threshold = Patterns.level_value(level)
+
+    errors =
+      entries
+      |> Stream.filter(fn {entry, _idx} ->
+        severity = entry["_severity"]
+        atom_level = Map.get(@json_severity_to_atom, severity)
+
+        TimeFilter.in_range?(entry, since, until_dt) and
+          atom_level != nil and
+          Patterns.level_value(atom_level) >= threshold and
+          not excluded?(entry["_message"] || "", exclude_regex)
+      end)
+      |> Enum.to_list()
+      |> Enum.take(-max_lines)
+      |> Enum.map(fn {entry, idx} ->
+        JsonLogParser.json_entry_to_toon_map(entry, idx)
+      end)
+
+    {:ok, errors}
+  end
+
   @doc false
   def compile_exclude(nil), do: {:ok, nil}
 

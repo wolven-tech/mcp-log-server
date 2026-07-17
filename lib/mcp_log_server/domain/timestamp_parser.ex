@@ -52,6 +52,22 @@ defmodule McpLogServer.Domain.TimestampParser do
   end
 
   @doc """
+  Parse a user-supplied time argument: ISO 8601 first, then relative
+  shorthand (`"30m"`, `"2h"`, ...). Returns `nil` for anything else.
+  """
+  @spec parse_time(any()) :: DateTime.t() | nil
+  def parse_time(nil), do: nil
+
+  def parse_time(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _} -> dt
+      _ -> parse_relative(value)
+    end
+  end
+
+  def parse_time(_), do: nil
+
+  @doc """
   Parse a relative time shorthand into an absolute DateTime.
 
   Supports: "30s", "5m", "2h", "1d", "1w"

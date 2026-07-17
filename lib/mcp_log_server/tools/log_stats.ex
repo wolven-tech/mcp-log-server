@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.LogStats do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.StatsCollector
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
 
   @impl true
   def name, do: "log_stats"
@@ -28,7 +28,7 @@ defmodule McpLogServer.Tools.LogStats do
   def execute(args, log_dir) do
     file = Map.get(args, "file", "")
 
-    case StatsCollector.get_stats(log_dir, file) do
+    case UseCases.CollectStats.run(log_dir, file) do
       {:ok, stats} -> {:ok, ResponseFormatter.format(:stats, stats)}
       {:error, reason} -> {:error, reason}
     end

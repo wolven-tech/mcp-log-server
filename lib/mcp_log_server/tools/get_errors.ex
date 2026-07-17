@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.GetErrors do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.ErrorExtractor
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -50,7 +50,7 @@ defmodule McpLogServer.Tools.GetErrors do
     end
     opts = maybe_add_time_opts(opts, args)
 
-    case ErrorExtractor.get_errors(log_dir, file, lines, opts) do
+    case UseCases.GetErrors.run(log_dir, file, lines, opts) do
       {:ok, errors} ->
         {:ok,
          ResponseFormatter.format(

@@ -70,6 +70,133 @@ defmodule McpLogServer.Domain.Correlator do
      }}
   end
 
+  @doc """
+  Build timeline entries from an enumerable of `{enriched_json_entry, index}`
+  tuples that match the correlation `value` (optionally restricted to
+  `field`). Pure over its input.
+  """
+  @spec json_timeline(Enumerable.t(), String.t(), String.t(), String.t() | nil) ::
+          [timeline_entry()]
+  def json_timeline(entries, basename, value, field) do
+    entries
+    |> Stream.filter(fn {entry, _idx} -> matches_json_entry?(entry, value, field) end)
+    |> Enum.map(fn {entry, idx} ->
+      %{
+        file: basename,
+        line_number: idx,
+        timestamp: entry["_timestamp"],
+        severity: entry["_severity"],
+        content:
+          entry["_message"] ||
+            Jason.encode!(Map.drop(entry, ["_severity", "_message", "_timestamp"]))
+      }
+    end)
+  end
+
+  @doc """
+  Build timeline entries from an enumerable of `{line, index}` tuples that
+  match the correlation `value` (optionally as `field=value` / `field: value`).
+  Pure over its input.
+  """
+  @spec plain_timeline(Enumerable.t(), String.t(), String.t(), String.t() | nil) ::
+          [timeline_entry()]
+  def plain_timeline(indexed_lines, basename, value, field) do
+    escaped = Regex.escape(value)
+
+    regex =
+      if field do
+        # Match field=value or field: value patterns
+        {:ok, r} = Regex.compile("#{Regex.escape(field)}[=:]\\s*#{escaped}")
+        r
+      else
+        {:ok, r} = Regex.compile(escaped)
+        r
+      end
+
+    indexed_lines
+    |> Stream.filter(fn {line, _idx} -> Regex.match?(regex, line) end)
+    |> Enum.map(fn {line, idx} ->
+      ts = TimestampParser.extract(line)
+
+      %{
+        file: basename,
+        line_number: idx,
+        timestamp: if(ts, do: DateTime.to_iso8601(ts), else: nil),
+        severity: extract_plain_severity(line),
+        content: line
+      }
+    end)
+  end
+
+  @doc "Sort timeline entries by timestamp (nil timestamps sort last)."
+  @spec sort_timeline([timeline_entry()]) :: [timeline_entry()]
+  def sort_timeline(entries), do: sort_by_timestamp(entries)
+
+  @doc """
+  Extract `{value, timestamp}` pairs for a dot-notation `field` from an
+  enumerable of `{enriched_json_entry, index}` tuples. Pure over its input.
+  """
+  @spec json_field_values(Enumerable.t(), String.t()) :: [{String.t(), String.t() | nil}]
+  def json_field_values(entries, field) do
+    keys = String.split(field, ".")
+
+    entries
+    |> Enum.flat_map(fn {entry, _idx} ->
+      value = get_in(entry, keys)
+      if value != nil, do: [{to_string(value), entry["_timestamp"]}], else: []
+    end)
+  end
+
+  @doc """
+  Extract `{value, timestamp}` pairs for `field=value` / `field: value`
+  occurrences from an enumerable of plain-text lines. Pure over its input.
+  """
+  @spec plain_field_values(Enumerable.t(), String.t()) :: [{String.t(), String.t() | nil}]
+  def plain_field_values(lines, field) do
+    escaped_field = Regex.escape(field)
+    {:ok, regex} = Regex.compile("#{escaped_field}[=:]\\s*([^\\s,;]+)")
+
+    lines
+    |> Enum.flat_map(fn line ->
+      case Regex.run(regex, line) do
+        [_, value] ->
+          ts = TimestampParser.extract(line)
+          [{value, ts && DateTime.to_iso8601(ts)}]
+
+        _ ->
+          []
+      end
+    end)
+  end
+
+  @doc """
+  Aggregate `{value, timestamp}` pairs into per-value stats sorted by count
+  (descending), capped at `max_values`. Pure over its input.
+  """
+  @spec aggregate_field_values(Enumerable.t(), pos_integer()) :: [map()]
+  def aggregate_field_values(pairs, max_values) do
+    pairs
+    |> Enum.reduce(%{}, fn {value, timestamp}, acc ->
+      Map.update(acc, value, %{count: 1, first_seen: timestamp, last_seen: timestamp}, fn stat ->
+        %{
+          count: stat.count + 1,
+          first_seen: min_timestamp(stat.first_seen, timestamp),
+          last_seen: max_timestamp(stat.last_seen, timestamp)
+        }
+      end)
+    end)
+    |> Enum.map(fn {value, stat} ->
+      %{
+        value: value,
+        count: stat.count,
+        first_seen: stat.first_seen,
+        last_seen: stat.last_seen
+      }
+    end)
+    |> Enum.sort_by(& &1.count, :desc)
+    |> Enum.take(max_values)
+  end
+
   # -- Private: per-file search --
 
   defp search_file(path, value, field) do

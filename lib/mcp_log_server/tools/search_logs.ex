@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.SearchLogs do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.LogSearch
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -45,7 +45,7 @@ defmodule McpLogServer.Tools.SearchLogs do
     opts = if field, do: Keyword.put(opts, :field, field), else: opts
     opts = maybe_add_time_opts(opts, args)
 
-    case LogSearch.search(log_dir, file, pattern, opts) do
+    case UseCases.SearchLogs.run(log_dir, file, pattern, opts) do
       {:ok, results} -> {:ok, ResponseFormatter.format(:search_results, results, format)}
       {:error, reason} -> {:error, reason}
     end

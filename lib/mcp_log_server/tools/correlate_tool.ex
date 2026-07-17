@@ -3,8 +3,8 @@ defmodule McpLogServer.Tools.CorrelateTool do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.Correlator
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2]
 
   @impl true
@@ -38,7 +38,7 @@ defmodule McpLogServer.Tools.CorrelateTool do
     opts = [max_results: max_results]
     opts = if field, do: Keyword.put(opts, :field, field), else: opts
 
-    case Correlator.correlate(log_dir, value, opts) do
+    case UseCases.Correlate.run(log_dir, value, opts) do
       {:ok, result} ->
         {:ok, ResponseFormatter.format(:correlation, result, format)}
     end

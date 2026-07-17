@@ -3,9 +3,8 @@ defmodule McpLogServer.Tools.AllErrors do
 
   @behaviour McpLogServer.Tools.Tool
 
-  alias McpLogServer.Domain.FileAccess
-  alias McpLogServer.Domain.ErrorExtractor
   alias McpLogServer.Protocol.ResponseFormatter
+  alias McpLogServer.UseCases
   import McpLogServer.Tools.Helpers, only: [to_pos_int: 2, maybe_add_time_opts: 2]
 
   @impl true
@@ -46,26 +45,8 @@ defmodule McpLogServer.Tools.AllErrors do
     end
     opts = maybe_add_time_opts(opts, args)
 
-    {:ok, files} = FileAccess.list_files(log_dir)
-
-    {results, skipped} =
-      Enum.reduce(files, {[], []}, fn %{name: name} = file_info, {res, skip} ->
-        case FileAccess.check_size(file_info.path) do
-          {:error, _} ->
-            size_mb = Float.round(file_info.size_bytes / 1_048_576, 1)
-            max_mb = Application.get_env(:mcp_log_server, :max_log_file_mb, 100)
-            {res, skip ++ ["--- skipped: #{name} (#{size_mb} MB exceeds #{max_mb} MB limit) ---"]}
-
-          {:ok, _} ->
-            case ErrorExtractor.get_errors(log_dir, name, lines_per_file, opts) do
-              {:ok, errors} when errors != [] ->
-                {res ++ [%{file: name, error_count: length(errors), matches: errors}], skip}
-
-              _ ->
-                {res, skip}
-            end
-        end
-      end)
+    {:ok, %{results: results, skipped: skipped}} =
+      UseCases.AllErrors.run(log_dir, lines_per_file, opts)
 
     output = ResponseFormatter.format(:multi_file_errors, results)
 
