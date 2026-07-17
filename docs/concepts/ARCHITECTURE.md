@@ -161,6 +161,12 @@ world, deliberately shaped for the roadmap (issues #6/#7):
   around as data.
 - **LogSync** — pulling logs from an external store into the local log
   directory.
+- **LogIndex** — the incremental persistent index (issue #7 P7). Two
+  queries: `seek/3` (deepest byte offset a `since`-bounded scan may start
+  at) and `field_stats/1` (per-file JSON field-key knowledge for absence
+  proofs). The contract is honesty-first: `:miss` on ANY doubt, and
+  callers must treat `:miss` as "do the linear scan" — indexed and
+  unindexed paths return identical results, only speed differs.
 
 ### Infrastructure Layer
 
@@ -176,6 +182,17 @@ world, deliberately shaped for the roadmap (issues #6/#7):
 - **EnvConfig** — `Config` adapter reading the application environment
   (populated from OS env vars by `config/runtime.exs`) at call time.
 - **CloudSync** — `LogSync` adapter shelling out to gsutil/aws/az.
+- **LogIndex** — `Ports.LogIndex` adapter: ETS (the lock-free read path —
+  queries never call the GenServer) + DETS under `LOG_DIR/.index/`
+  (persistence, schema-versioned, self-healing on corruption). Builds run
+  serialized in one background process, triggered lazily by query misses
+  and incrementally by the `SourceWorker` ingest hook; append-only growth
+  extends an index, anything else (rotation, truncation, signature
+  mismatch) drops and rebuilds it. See
+  `docs/decisions/001-index-storage.md` for why ETS+DETS beat SQLite
+  here (escript-safe, zero NIFs, cache-not-truth semantics).
+- **NoIndex** — the always-`:miss` adapter: the `LOG_INDEX=off` mode and
+  the control group for the index oracle tests.
 
 Port wiring lives in `config/config.exs`; the composition root
 (`McpLogServer.Application`) is the only other place infrastructure modules
@@ -206,6 +223,17 @@ streams:
 - **TimeRangeCalc** — single-pass head/tail sampling and span computation.
 - **Correlator** — correlation matching, timeline building/sorting, field
   value extraction and aggregation.
+- **SparseIndex** — pure construction/querying of the per-file index:
+  sparse checkpoints (`{byte_offset, lines, max_ts, unparsed}` in BOTH
+  line-regex and JSON-entry timestamp semantics — a seek is only sound in
+  the semantics of the scan it replaces), field-key `present`/`opaque`
+  path sets for absence proofs, and the seek soundness rule (skip a
+  prefix only when every timestamp in it parsed and lies strictly before
+  `since` — one fail-open line disables the seek).
+- **WindowDiff** — pure window-vs-baseline aggregation behind `summarize`:
+  template diff (new/gone), error rates, per-source volume. Lines without
+  a parseable timestamp fold into BOTH ranges so they can never fabricate
+  a diff row.
 
 ### Config Layer
 
@@ -294,6 +322,19 @@ savings compounds meaningfully.
 **Why a Tool behaviour?** Each tool module is self-contained and the
 Dispatcher is a two-line lookup-and-call. Adding a tool requires zero changes
 to existing code (Open/Closed Principle).
+
+**Why ETS+DETS for the index, not SQLite?** The project ships as an escript
+and `exqlite` is a NIF — escripts cannot load it, so SQLite would disable
+the index in the primary packaging. The index is also a CACHE (sparse
+checkpoints + key sets, ~KB per file), so DETS's weaker durability costs
+nothing: corruption → delete → rebuild from the logs, which stay the only
+source of truth. Full analysis in `docs/decisions/001-index-storage.md`.
+
+**Why does the index never block a query?** Queries read a
+`read_concurrency` ETS table directly and take whatever state exists;
+builds are casts processed by one background process. A slow build can
+delay another build, never a tool call — the request path's worst case is
+exactly the pre-index linear scan, flagged `index_used: false`.
 
 **Why persistent_term for Patterns?** Log-level patterns are read on every
 line of every file during error extraction and stats collection.

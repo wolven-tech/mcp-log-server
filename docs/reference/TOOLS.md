@@ -11,7 +11,7 @@ tags: [reference, api, tools]
 
 # Tool Reference
 
-MCP Log Server exposes 11 tools via the MCP `tools/call` method. All tools return results as MCP text content.
+MCP Log Server exposes 12 tools via the MCP `tools/call` method. All tools return results as MCP text content.
 
 ---
 
@@ -19,6 +19,7 @@ MCP Log Server exposes 11 tools via the MCP `tools/call` method. All tools retur
 
 A typical investigation follows this sequence:
 
+0. **`summarize`** -- "What changed in the last 15 minutes?" One call diffs a time window against the window before it: new/gone message templates, error-rate delta, volume delta per source. The highest-leverage first call during an incident.
 1. **`all_errors`** -- Health overview across all log files. Start here to see which services have problems.
 2. **`log_stats`** or **`time_range`** -- Understand the scope of a specific file (line counts, error counts, time span).
 3. **`get_errors`** with `level`/`since` -- Targeted investigation of a single file, filtering by severity and time window.
@@ -82,7 +83,23 @@ omissions: {
 - **Zero noise:** the block is entirely absent when nothing was bounded — never `omitted: 0` — so complete results are unchanged.
 - The oversized-file skip appears in the results of every multi-file scan that would have included the file (`all_errors`, rollup-mode `search_logs`). Single-file tools refuse oversized files with an explicit error instead.
 
-Bounds reported per tool: `search_logs` (`max_results`), `get_errors` (`lines`), `tail_log` (`lines`), `all_errors` (per-file `lines` + skipped files), `correlate` (`max_results`; anchor mode also `max_sections`), `trace_ids` (`max_values`), `aggregate` (`max_values` for the histogram + skipped files).
+Bounds reported per tool: `search_logs` (`max_results`), `get_errors` (`lines`), `tail_log` (`lines`), `all_errors` (per-file `lines` + skipped files), `correlate` (`max_results`; anchor mode also `max_sections`), `trace_ids` (`max_values`), `aggregate` (`max_values` for the histogram + skipped files), `summarize` (`max_templates` per template list + skipped files).
+
+---
+
+## The Persistent Index and `index_used`
+
+Large log directories make `since`-bounded queries and field aggregation linear scans. The server therefore maintains an **incremental persistent index** under `LOG_DIR/.index/` (invisible to `list_logs` and every scan): a sparse timestamp → byte-offset map per file (making `since` seeks skip the proven-excludable prefix) plus per-file JSON field-key knowledge (letting `aggregate` prove field absence without a scan). Storage is ETS + DETS — no native dependencies, works identically in escripts and releases (see `docs/decisions/001-index-storage.md`).
+
+The rules that keep it trustworthy:
+
+- **The index is a cache, never a source of truth.** Indexed and unindexed paths return byte-identical results; the index only changes speed. On any doubt — index missing, stale, corrupt, disabled, file rotated/truncated — the query transparently falls back to the linear scan and reports **`index_used: false`**; a background rebuild is scheduled. A wrong index silently narrowing results would be the exact silent failure the `omissions` block exists to prevent.
+- **Fail-open lines block seeks.** A prefix is only skipped when every line in it has a parsed timestamp strictly before `since`. One unparseable timestamp in the prefix (which the fail-open policy would have included) disables the seek — honesty beats speed.
+- **Built in the background, never on the request path.** Live `LOG_SOURCES` files are extended incrementally as they grow (batched ingest hook); static files are indexed lazily after their first index-eligible query. Queries always take whatever index state exists.
+- **Self-healing.** Corrupt or version-mismatched index storage is dropped and rebuilt automatically; deleting `LOG_DIR/.index/` at any time is safe.
+- `LOG_INDEX=off` disables indexing entirely — everything still works, linearly.
+
+`index_used` appears in the results of index-eligible queries: `tail_log`/`search_logs` with `since` (no cursor), every `aggregate`, and every `summarize`.
 
 ---
 
@@ -618,6 +635,60 @@ Aggregate/facet on a JSON field (dot-path) across one log file or ALL files. Thi
 When the distinct-value cap was hit, the metadata carries `"omissions":{"values":{"omitted":N,"showing":"top 50 by count"}}` — a truncated histogram never looks complete.
 
 **When to use:** Prove structured-field presence/absence in one call (`exists`), see the distribution of a field's values (`values`), or count occurrences (`count`) — instead of grepping and hand-counting.
+
+---
+
+### summarize
+
+The incident-triage capstone: **"what's new or unusual in this window vs the prior one?"** in one call. The window (e.g. the last 15 minutes) is diffed against a **baseline** — by default the equal-length window immediately before it — across all logs (or one file):
+
+- **`new_templates`** -- message templates ([the slice-004 normalizer](#rollup-mode-did-x-happen-on-how-many-instances-when): timestamps/UUIDs/IPs/ids collapsed to placeholders) present in the window but ABSENT in the baseline. Each row: `count`, `instances_seen` (e.g. `1/3` sources), `first_ts`, one raw `sample`. This is where a novel failure mode surfaces.
+- **`gone_templates`** -- present in the baseline, absent in the window (top K by baseline count) — the heartbeat that stopped.
+- **`error_rate`** -- errors/min in window vs baseline with `delta_per_min`.
+- **`volume`** -- lines/min per source with delta — the service that went quiet or exploded.
+
+**Honesty:** `unparsed_ts` counts lines that could not be placed in time; they fold into BOTH ranges (fail-open), so they can never fabricate a `new`/`gone` row — the diff degrades conservatively and observably. Capped template lists are reported in `omissions` (`new_templates`/`gone_templates`); files skipped by the size guardrail appear in `omissions.skipped_files`; `index_used` reports whether the [persistent index](#the-persistent-index-and-index_used) accelerated the scan (results are identical without it).
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `window` | string | Yes* | -- | Window length as relative shorthand (`"15m"`, `"2h"`), ending now (or at `until`). *Either `window` or `since` is required |
+| `since` | string | Yes* | -- | Explicit window start (ISO 8601 or relative shorthand) — alternative to `window` |
+| `until` | string | No | now | Window end |
+| `baseline` | string | No | window length | Baseline length (e.g. `"1h"`), immediately before the window |
+| `file` | string | No | -- | Log file name. Omit to scan ALL log files |
+| `max_templates` | integer | No | 20 | Cap per template list |
+| `format` | string | No | toon | Output format: `toon` or `json` |
+
+**Example request (the 15-minute incident question):**
+```json
+{
+  "name": "summarize",
+  "arguments": {"window": "15m"}
+}
+```
+
+**Example response:**
+```
+# {"window":{"since":"2026-07-17T10:15:00Z","until":"2026-07-17T10:30:00Z"},"baseline":{"since":"2026-07-17T10:00:00Z","until":"2026-07-17T10:15:00Z"},"files_scanned":2,"sources_seen":2,"error_rate":{"window_errors":2,"baseline_errors":0,"window_per_min":0.13,"baseline_per_min":0.0,"delta_per_min":0.13},"unparsed_ts":0,"index_used":true}
+== new templates (1) ==
+[count|first_ts|instances_seen|sample|template]
+2|2026-07-17T10:20:00Z|1/2|2026-07-17T10:20:00Z ERROR redis connection refused conn=ab12cd34ef|<TS> ERROR redis connection refused conn=<HEX>
+
+== gone templates (1) ==
+[baseline_count|last_ts|template]
+5|2026-07-17T10:05:00Z|<TS> INFO request <N> handled
+
+== volume by source (2) ==
+[baseline_lines|baseline_per_min|delta_per_min|source|window_lines|window_per_min]
+5|0.33|-0.2|api.log|2|0.13
+1|0.07|0.0|web.log|1|0.07
+```
+
+Read: a redis-refused template appeared (twice, on 1 of 2 sources, first at 10:20), the steady request traffic stopped, and the error rate went from 0 to 0.13/min — the whole incident shape in one response.
+
+**When to use:** First call when something "just started happening". Answers "what changed?" without knowing what to grep for; follow up with `search_logs`/`correlate` on the surfaced template.
 
 ---
 
