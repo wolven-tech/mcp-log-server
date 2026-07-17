@@ -98,7 +98,7 @@ the tool name, arguments, and log directory.
 
 ### Tools Layer (interface)
 
-**Modules**: `McpLogServer.Tools.Tool` (behaviour), `Registry`, `Dispatcher`, `Helpers`, plus 10 tool modules.
+**Modules**: `McpLogServer.Tools.Tool` (behaviour), `Registry`, `Dispatcher`, `Helpers`, plus 12 tool modules.
 
 Each tool implements the `Tool` behaviour (`name/0`, `description/0`,
 `schema/0`, `execute/2`) and is deliberately thin: it coerces and validates
@@ -116,6 +116,8 @@ MCP arguments, calls exactly one use-case, and formats the result via
 | `CorrelateTool` | `correlate` | `UseCases.Correlate` |
 | `TraceIds` | `trace_ids` | `UseCases.TraceIds` |
 | `AllErrors` | `all_errors` | `UseCases.AllErrors` |
+| `Aggregate` | `aggregate` | `UseCases.Aggregate` |
+| `Summarize` | `summarize` | `UseCases.Summarize` |
 | `SyncLogs` | `sync_logs` | `UseCases.SyncLogs` |
 
 **Registry** derives its tool list and lookup map at compile time.
