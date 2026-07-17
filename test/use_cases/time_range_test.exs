@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.TimeRangeTest do
+defmodule McpLogServer.UseCases.TimeRangeTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.LogReader
+  alias McpLogServer.UseCases.LogReader
 
   @tmp_dir System.tmp_dir!() |> Path.join("time_range_test")
 

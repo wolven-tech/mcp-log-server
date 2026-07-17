@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.CleanupTest do
+defmodule McpLogServer.Infrastructure.CleanupTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.FileAccess
+  alias McpLogServer.Infrastructure.FileLogSource
 
   @tmp_dir System.tmp_dir!() |> Path.join("cleanup_test")
 
@@ -33,7 +33,7 @@ defmodule McpLogServer.Domain.CleanupTest do
 
       write_file("new.log", "new data\n")
 
-      FileAccess.cleanup_old_logs(@tmp_dir, 7)
+      FileLogSource.cleanup_old_logs(@tmp_dir, 7)
 
       refute File.exists?(path)
       assert File.exists?(Path.join(@tmp_dir, "new.log"))
@@ -43,7 +43,7 @@ defmodule McpLogServer.Domain.CleanupTest do
       path = write_file("recent.log", "recent data\n")
       make_old(path, 3)
 
-      FileAccess.cleanup_old_logs(@tmp_dir, 7)
+      FileLogSource.cleanup_old_logs(@tmp_dir, 7)
 
       assert File.exists?(path)
     end
@@ -60,7 +60,7 @@ defmodule McpLogServer.Domain.CleanupTest do
       File.ln_s!(target, link_path)
       make_old(link_path, 30)
 
-      FileAccess.cleanup_old_logs(@tmp_dir, 7)
+      FileLogSource.cleanup_old_logs(@tmp_dir, 7)
 
       # The symlink file itself should NOT be deleted
       {:ok, lstat} = File.lstat(link_path)
@@ -73,7 +73,7 @@ defmodule McpLogServer.Domain.CleanupTest do
       path = write_file("keep.log", "keep\n")
       make_old(path, 999)
 
-      FileAccess.cleanup_old_logs(@tmp_dir, nil)
+      FileLogSource.cleanup_old_logs(@tmp_dir, nil)
 
       assert File.exists?(path)
     end
@@ -82,7 +82,7 @@ defmodule McpLogServer.Domain.CleanupTest do
       write_file("fresh.log", "fresh\n")
 
       # Should not raise, should log "no files to clean up"
-      assert :ok = FileAccess.cleanup_old_logs(@tmp_dir, 7)
+      assert :ok = FileLogSource.cleanup_old_logs(@tmp_dir, 7)
     end
   end
 end

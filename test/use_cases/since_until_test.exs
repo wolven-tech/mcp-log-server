@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.SinceUntilTest do
+defmodule McpLogServer.UseCases.SinceUntilTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.LogReader
+  alias McpLogServer.UseCases.LogReader
 
   @tmp_dir System.tmp_dir!() |> Path.join("since_until_test")
 

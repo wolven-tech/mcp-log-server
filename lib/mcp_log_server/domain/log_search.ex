@@ -1,14 +1,15 @@
 defmodule McpLogServer.Domain.LogSearch do
   @moduledoc """
-  Searches log files for lines matching a regex pattern, supporting
-  both plain-text and JSON field-level searches with time filtering.
+  Pure regex search over streams of plain-text lines or JSON-structured
+  entries, with time filtering and context lines.
+
+  All functions operate on enumerables supplied by the caller; I/O lives in
+  the application layer (`McpLogServer.UseCases.SearchLogs`) and behind the
+  `LogSource` port.
   """
 
-  alias McpLogServer.Domain.FileAccess
-  alias McpLogServer.Domain.FormatDetector
   alias McpLogServer.Domain.JsonLogParser
   alias McpLogServer.Domain.TimeFilter
-  alias McpLogServer.Domain.TimestampParser
 
   @type log_entry :: %{line_number: pos_integer(), content: String.t()}
   @type search_result :: %{
@@ -19,107 +20,10 @@ defmodule McpLogServer.Domain.LogSearch do
         }
 
   @doc """
-  Search a log file for lines matching a regex pattern.
-
-  ## Options
-
-    * `:since` - only include lines from this time onward
-    * `:until` - only include lines up to this time
-    * `:field` - JSON field to search in (dot-notation)
-    * `:max_results` - max results (default: 50)
-    * `:context` - context lines around match (default: 0)
-  """
-  @spec search(String.t(), String.t(), String.t(), keyword()) ::
-          {:ok, search_result()} | {:error, String.t()}
-  def search(log_dir, file, pattern, opts \\ []) do
-    max_results = Keyword.get(opts, :max_results, 50)
-    context_lines = Keyword.get(opts, :context, 0)
-    field = Keyword.get(opts, :field)
-    since = parse_time_opt(Keyword.get(opts, :since))
-    until_dt = parse_time_opt(Keyword.get(opts, :until))
-
-    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file),
-         {:ok, regex} <- compile_pattern(pattern) do
-      format = FormatDetector.detect(path)
-
-      case {format, field} do
-        {fmt, field} when fmt in [:json_lines, :json_array] and field != nil ->
-          search_json_field(path, fmt, regex, pattern, field, max_results, since, until_dt)
-
-        _ ->
-          search_plain(path, regex, pattern, max_results, context_lines, since, until_dt)
-      end
-    end
-  end
-
-  @doc false
-  def search_plain(path, regex, pattern, max_results, context_lines, since, until_dt) do
-    lines = FileAccess.read_indexed(path)
-
-    matches =
-      lines
-      |> Enum.filter(fn {line, _idx} ->
-        TimeFilter.in_range?(line, since, until_dt) and Regex.match?(regex, line)
-      end)
-      |> Enum.take(max_results)
-      |> Enum.map(fn {line, idx} ->
-        entry = %{line_number: idx, content: line}
-
-        if context_lines > 0 do
-          ctx =
-            lines
-            |> Enum.filter(fn {_l, i} ->
-              i >= idx - context_lines and i <= idx + context_lines and i != idx
-            end)
-            |> Enum.map_join("\n", fn {l, i} -> "  #{i}: #{l}" end)
-
-          Map.put(entry, :context, ctx)
-        else
-          entry
-        end
-      end)
-
-    {:ok,
-     %{
-       file: Path.basename(path),
-       pattern: pattern,
-       returned_matches: length(matches),
-       matches: matches
-     }}
-  end
-
-  @doc false
-  def search_json_field(path, format, regex, pattern, field, max_results, since, until_dt) do
-    keys = String.split(field, ".")
-
-    matches =
-      JsonLogParser.stream_entries(path, format)
-      |> Stream.filter(fn {entry, _idx} ->
-        value = get_in(entry, keys)
-
-        TimeFilter.in_range?(entry, since, until_dt) and
-          value != nil and
-          Regex.match?(regex, to_string(value))
-      end)
-      |> Enum.take(max_results)
-      |> Enum.map(fn {entry, idx} ->
-        JsonLogParser.json_entry_to_toon_map(entry, idx)
-      end)
-
-    {:ok,
-     %{
-       file: Path.basename(path),
-       pattern: pattern,
-       returned_matches: length(matches),
-       matches: matches
-     }}
-  end
-
-  @doc """
   Search an enumerable of `{line, index}` tuples for regex matches.
 
-  Pure over its input. `file_name` is only echoed into the result map.
-  Context lines require the full line list, so the input is materialized.
+  `file_name` is only echoed into the result map. Context lines require the
+  full line list, so the input is materialized.
   """
   @spec match_plain(Enumerable.t(), Regex.t(), String.t(), String.t(),
           non_neg_integer(), non_neg_integer(), DateTime.t() | nil, DateTime.t() | nil) ::
@@ -199,15 +103,4 @@ defmodule McpLogServer.Domain.LogSearch do
       {:error, _} -> {:error, "Invalid regex: #{pattern}"}
     end
   end
-
-  defp parse_time_opt(nil), do: nil
-
-  defp parse_time_opt(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, dt, _} -> dt
-      _ -> TimestampParser.parse_relative(value)
-    end
-  end
-
-  defp parse_time_opt(_), do: nil
 end

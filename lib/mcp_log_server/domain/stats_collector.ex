@@ -1,14 +1,13 @@
 defmodule McpLogServer.Domain.StatsCollector do
   @moduledoc """
-  Computes statistics for log files: line counts, error/warn/fatal counts,
-  file size, and last-modified time. Supports both plain-text and JSON formats.
+  Pure severity counting over streams of plain-text lines or JSON-structured
+  entries.
+
+  All functions operate on enumerables supplied by the caller; I/O and result
+  shaping live in the application layer (`McpLogServer.UseCases.CollectStats`).
   """
 
   alias McpLogServer.Config.Patterns
-  alias McpLogServer.Domain.FileAccess
-  alias McpLogServer.Domain.FormatDispatch
-  alias McpLogServer.Domain.JsonLogParser
-  alias McpLogServer.Util.Formatting
 
   @type file_stats :: %{
           file: String.t(),
@@ -24,36 +23,9 @@ defmodule McpLogServer.Domain.StatsCollector do
   @json_error_severities ~w(error fatal exception)
   @json_fatal_severities ~w(fatal)
 
-  @doc "Compute stats for a log file without returning its content."
-  @spec get_stats(String.t(), String.t()) :: {:ok, file_stats()} | {:error, String.t()}
-  def get_stats(log_dir, file) do
-    with {:ok, path} <- FileAccess.resolve(log_dir, file) do
-      stat = File.stat!(path)
-
-      {line_count, error_count, warn_count, fatal_count} =
-        FormatDispatch.dispatch(
-          path,
-          fn fmt -> get_stats_json(path, fmt) end,
-          fn -> get_stats_plain(path) end
-        )
-
-      {:ok,
-       %{
-         file: Path.basename(path),
-         size_bytes: stat.size,
-         size_human: Formatting.humanize_bytes(stat.size),
-         line_count: line_count,
-         error_count: error_count,
-         warn_count: warn_count,
-         fatal_count: fatal_count,
-         modified: NaiveDateTime.to_iso8601(stat.mtime |> NaiveDateTime.from_erl!())
-       }}
-    end
-  end
-
   @doc """
   Count `{lines, errors, warns, fatals}` over an enumerable of plain-text
-  lines using the configured severity patterns. Pure over its input.
+  lines using the configured severity patterns.
   """
   @spec count_plain(Enumerable.t()) ::
           {non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}
@@ -90,43 +62,5 @@ defmodule McpLogServer.Domain.StatsCollector do
         if(severity in @json_fatal_severities, do: fatals + 1, else: fatals)
       }
     end)
-  end
-
-  @doc false
-  def get_stats_plain(path) do
-    path
-    |> File.stream!()
-    |> Enum.reduce({0, 0, 0, 0}, fn line, {lines, errors, warns, fatals} ->
-      detected = Patterns.detect_level(line)
-
-      {
-        lines + 1,
-        if(detected == :error, do: errors + 1, else: errors),
-        if(detected == :warn, do: warns + 1, else: warns),
-        if(detected == :fatal, do: fatals + 1, else: fatals)
-      }
-    end)
-  end
-
-  @doc false
-  def get_stats_json(path, format) do
-    try do
-      JsonLogParser.stream_entries(path, format)
-      |> Enum.reduce({0, 0, 0, 0}, fn {entry, _idx}, {lines, errors, warns, fatals} ->
-        severity = entry["_severity"]
-
-        {
-          lines + 1,
-          if(severity in @json_error_severities and severity not in @json_fatal_severities,
-            do: errors + 1,
-            else: errors
-          ),
-          if(severity == "warn" or severity == "warning", do: warns + 1, else: warns),
-          if(severity in @json_fatal_severities, do: fatals + 1, else: fatals)
-        }
-      end)
-    rescue
-      _ -> get_stats_plain(path)
-    end
   end
 end

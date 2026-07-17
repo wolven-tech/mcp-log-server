@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.LogReaderJsonTest do
+defmodule McpLogServer.UseCases.LogReaderJsonTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.LogReader
+  alias McpLogServer.UseCases.LogReader
 
   @tmp_dir System.tmp_dir!() |> Path.join("log_reader_json_test")
 

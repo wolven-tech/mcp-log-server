@@ -1,31 +1,16 @@
 defmodule McpLogServer.Domain.TimeRangeCalc do
   @moduledoc """
-  Computes the time range (earliest and latest timestamps) of a log file
-  by sampling the first and last lines. Supports plain-text and JSON formats.
+  Pure computation of a log's time range (earliest and latest timestamps)
+  by sampling the first and last lines of a line stream. Supports plain-text
+  and JSON formats.
+
+  Operates on enumerables supplied by the caller; I/O lives in the
+  application layer (`McpLogServer.UseCases.TimeRange`).
   """
 
-  alias McpLogServer.Domain.FileAccess
-  alias McpLogServer.Domain.FormatDetector
   alias McpLogServer.Domain.JsonLogParser
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.Util.Formatting
-
-  @doc """
-  Return the time range of a log file by reading first and last 10 lines.
-
-  Returns `{:ok, map}` with keys: earliest, latest, span, line_count, format.
-  """
-  @spec time_range(String.t(), String.t()) :: {:ok, map()} | {:error, String.t()}
-  def time_range(log_dir, file) do
-    with {:ok, path} <- FileAccess.resolve_with_size_check(log_dir, file) do
-      format = FormatDetector.detect(path)
-
-      path
-      |> File.stream!()
-      |> Stream.map(&String.trim_trailing/1)
-      |> compute(format, Path.basename(path))
-    end
-  end
 
   @doc """
   Compute the time range over an enumerable of (already trimmed) lines.

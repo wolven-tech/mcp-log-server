@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.LogStatsConsistencyTest do
+defmodule McpLogServer.UseCases.LogStatsConsistencyTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.LogReader
+  alias McpLogServer.UseCases.LogReader
 
   @tmp_dir System.tmp_dir!() |> Path.join("log_stats_consistency_test")
 

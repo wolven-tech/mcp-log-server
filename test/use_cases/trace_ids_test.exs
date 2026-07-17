@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.TraceIdsTest do
+defmodule McpLogServer.UseCases.TraceIdsTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.Correlator
+  alias McpLogServer.UseCases.TraceIds
   alias McpLogServer.Tools.Dispatcher
 
   @tmp_dir System.tmp_dir!() |> Path.join("trace_ids_test")
@@ -29,7 +29,7 @@ defmodule McpLogServer.Domain.TraceIdsTest do
 
   describe "extract_trace_ids/3" do
     test "returns unique values with counts sorted by count desc" do
-      {:ok, results} = Correlator.extract_trace_ids(@tmp_dir, "sessionId")
+      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values
@@ -48,7 +48,7 @@ defmodule McpLogServer.Domain.TraceIdsTest do
     end
 
     test "includes first_seen and last_seen timestamps" do
-      {:ok, results} = Correlator.extract_trace_ids(@tmp_dir, "sessionId")
+      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId")
 
       abc = Enum.find(results, &(&1.value == "abc-123"))
       assert abc.first_seen != nil
@@ -56,12 +56,12 @@ defmodule McpLogServer.Domain.TraceIdsTest do
     end
 
     test "max_values caps results" do
-      {:ok, results} = Correlator.extract_trace_ids(@tmp_dir, "sessionId", max_values: 1)
+      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", max_values: 1)
       assert length(results) == 1
     end
 
     test "file option scans only one file" do
-      {:ok, results} = Correlator.extract_trace_ids(@tmp_dir, "sessionId", file: "gateway.log")
+      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", file: "gateway.log")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values
@@ -73,7 +73,7 @@ defmodule McpLogServer.Domain.TraceIdsTest do
     end
 
     test "extracts from plain text key=value patterns" do
-      {:ok, results} = Correlator.extract_trace_ids(@tmp_dir, "sessionId", file: "api.log")
+      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", file: "api.log")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values

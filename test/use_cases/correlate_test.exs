@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.CorrelatorTest do
+defmodule McpLogServer.UseCases.CorrelateTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.Correlator
+  alias McpLogServer.UseCases.Correlate
 
   @tmp_dir System.tmp_dir!() |> Path.join("correlator_test")
 
@@ -32,7 +32,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "correlate/3 across multiple files" do
     test "finds matches in both JSON and plain text files" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       assert result.value == "abc-123"
       assert result.field == nil
@@ -44,7 +44,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "returns correct total_matches count" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       # gateway.log: 3 entries with abc-123 (lines 1, 3, 4 — line 4 also has it in nested)
       # api.log: 3 entries with abc-123 (lines 1, 3, 4)
@@ -54,7 +54,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "correlate/3 with field parameter" do
     test "searches specific JSON field with exact match" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "sessionId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "sessionId")
 
       json_matches = Enum.filter(result.timeline, &(&1.file == "gateway.log"))
       # Should match entries with sessionId == "abc-123" (lines 1, 3, 4)
@@ -62,7 +62,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "field search in plain text matches field=value pattern" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "sessionId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "sessionId")
 
       plain_matches = Enum.filter(result.timeline, &(&1.file == "api.log"))
       # Lines with sessionId=abc-123: lines 1, 3, 4
@@ -70,7 +70,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "field search does not match entries with different field value" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "traceId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "traceId")
 
       # traceId is never "abc-123" in gateway.log (they are t-001, t-003, t-001)
       json_matches = Enum.filter(result.timeline, &(&1.file == "gateway.log"))
@@ -80,7 +80,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "correlate/3 deep search (no field)" do
     test "finds value in nested JSON objects" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       # The 4th gateway entry has nested.requestId = "abc-123"
       # It should be found by deep search
@@ -89,7 +89,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "finds value as substring in plain text" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       plain_matches = Enum.filter(result.timeline, &(&1.file == "api.log"))
       assert length(plain_matches) == 3
@@ -98,7 +98,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "timestamp sorting" do
     test "results are sorted by timestamp ascending" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       timestamps =
         result.timeline
@@ -112,7 +112,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
       # Create a file with no timestamps
       File.write!(Path.join(@tmp_dir, "nots.log"), "abc-123 no timestamp here\n")
 
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       last_entry = List.last(result.timeline)
       assert last_entry.timestamp == nil
@@ -122,7 +122,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "max_results option" do
     test "caps total results across all files" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", max_results: 2)
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", max_results: 2)
 
       assert result.total_matches == 2
       assert length(result.timeline) == 2
@@ -130,7 +130,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
     test "defaults to 200 max results" do
       # With only 6 matches total, all should be returned
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123")
 
       assert result.total_matches == 6
     end
@@ -138,7 +138,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "timeline_entry structure" do
     test "JSON entries have correct fields" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "sessionId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "sessionId")
 
       json_entry =
         result.timeline
@@ -152,7 +152,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "plain text entries have correct fields" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "sessionId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "sessionId")
 
       plain_entry =
         result.timeline
@@ -166,7 +166,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
     end
 
     test "JSON entry content is the message" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "abc-123", field: "sessionId")
+      {:ok, result} = Correlate.run(@tmp_dir, "abc-123", field: "sessionId")
 
       first_json =
         result.timeline
@@ -180,7 +180,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
 
   describe "edge cases" do
     test "returns empty result when no matches found" do
-      {:ok, result} = Correlator.correlate(@tmp_dir, "nonexistent-id-999")
+      {:ok, result} = Correlate.run(@tmp_dir, "nonexistent-id-999")
 
       assert result.total_matches == 0
       assert result.files_matched == []
@@ -192,7 +192,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
       File.mkdir_p!(empty_dir)
       on_exit(fn -> File.rm_rf!(empty_dir) end)
 
-      {:ok, result} = Correlator.correlate(empty_dir, "abc-123")
+      {:ok, result} = Correlate.run(empty_dir, "abc-123")
 
       assert result.total_matches == 0
       assert result.timeline == []
@@ -205,7 +205,7 @@ defmodule McpLogServer.Domain.CorrelatorTest do
         "2026-01-15 10:30:00 INFO value is foo.bar+baz(1)\n"
       )
 
-      {:ok, result} = Correlator.correlate(@tmp_dir, "foo.bar+baz(1)")
+      {:ok, result} = Correlate.run(@tmp_dir, "foo.bar+baz(1)")
 
       special_matches = Enum.filter(result.timeline, &(&1.file == "special.log"))
       assert length(special_matches) == 1

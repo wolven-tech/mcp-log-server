@@ -1,7 +1,7 @@
-defmodule McpLogServer.Domain.LogReaderTest do
+defmodule McpLogServer.UseCases.LogReaderTest do
   use ExUnit.Case, async: false
 
-  alias McpLogServer.Domain.LogReader
+  alias McpLogServer.UseCases.LogReader
 
   @tmp_dir System.tmp_dir!() |> Path.join("log_reader_level_test")
 

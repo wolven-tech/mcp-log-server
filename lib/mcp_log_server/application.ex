@@ -3,13 +3,15 @@ defmodule McpLogServer.Application do
 
   @impl true
   def start(_type, _args) do
-    log_dir = Application.fetch_env!(:mcp_log_server, :log_dir)
+    # Composition root: the only place infrastructure adapters are wired
+    # together with the runtime environment.
+    log_dir = McpLogServer.Infrastructure.EnvConfig.log_dir()
     File.mkdir_p!(log_dir)
 
     McpLogServer.Config.Patterns.init()
 
-    retention_days = Application.get_env(:mcp_log_server, :log_retention_days)
-    McpLogServer.Domain.FileAccess.cleanup_old_logs(log_dir, retention_days)
+    retention_days = McpLogServer.Infrastructure.EnvConfig.log_retention_days()
+    McpLogServer.Infrastructure.FileLogSource.cleanup_old_logs(log_dir, retention_days)
 
     children = [
       {McpLogServer.Transport.Stdio, handler: &McpLogServer.Server.handle_message/1}
