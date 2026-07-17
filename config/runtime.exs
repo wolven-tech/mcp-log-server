@@ -26,6 +26,11 @@ log_retention_days =
 
 config :mcp_log_server, :log_retention_days, log_retention_days
 
+# Declared timestamp formats: glob=format pairs separated by ';'
+# e.g. LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; app*.log=epoch_ms; dev-*.log=%H:%M:%S'
+# Validated at boot by McpLogServer.Config.TsFormats.init!/0.
+config :mcp_log_server, :ts_formats, System.get_env("LOG_TS_FORMATS")
+
 config :mcp_log_server, :patterns,
   fatal: System.get_env("LOG_FATAL_PATTERNS"),
   error: System.get_env("LOG_ERROR_PATTERNS"),

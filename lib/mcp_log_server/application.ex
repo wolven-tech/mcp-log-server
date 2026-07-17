@@ -9,6 +9,9 @@ defmodule McpLogServer.Application do
     File.mkdir_p!(log_dir)
 
     McpLogServer.Config.Patterns.init()
+    # Fails loudly at boot on an invalid LOG_TS_FORMATS declaration —
+    # a typo must never degrade into silent 0% timestamp parsing.
+    McpLogServer.Config.TsFormats.init!()
 
     retention_days = McpLogServer.Infrastructure.EnvConfig.log_retention_days()
     McpLogServer.Infrastructure.FileLogSource.cleanup_old_logs(log_dir, retention_days)
