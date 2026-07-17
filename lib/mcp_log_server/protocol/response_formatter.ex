@@ -15,6 +15,8 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
           | :error_results
           | :stats
           | :correlation
+          | :anchor_correlation
+          | :aggregate
           | :multi_file_errors
           | :rollup
 
@@ -44,10 +46,14 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
   # was active, `unparsed_ts` (lines that passed the filter because their
   # timestamp could not be parsed — fail-open) is appended to the header.
   # When the line cap was hit, the omissions block is appended too — a
-  # truncated tail must say so.
+  # truncated tail must say so. The polling cursor rides in the header
+  # (`# cursor: ...`), with `# cursor_reset: true` when a stale cursor
+  # forced a full window.
   def format(:tail, %{file: file, lines: lines, content: content} = data, format_opt) do
     unparsed_ts = Map.get(data, :unparsed_ts)
     omissions = Map.get(data, :omissions)
+    cursor = Map.get(data, :cursor)
+    cursor_reset = Map.get(data, :cursor_reset)
 
     if format_opt == "json" do
       payload = %{file: file, lines: lines, content: content}
@@ -55,17 +61,25 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
       payload =
         if unparsed_ts != nil, do: Map.put(payload, :unparsed_ts, unparsed_ts), else: payload
 
+      payload = if cursor != nil, do: Map.put(payload, :cursor, cursor), else: payload
+
+      payload =
+        if cursor_reset != nil, do: Map.put(payload, :cursor_reset, cursor_reset), else: payload
+
       payload = if omissions != nil, do: Map.put(payload, :omissions, omissions), else: payload
 
       Jason.encode!(payload)
     else
       header = "# tail #{file} (last #{lines} lines)"
       header = if unparsed_ts != nil, do: header <> "\n# unparsed_ts: #{unparsed_ts}", else: header
+      header = if cursor_reset != nil, do: header <> "\n# cursor_reset: true", else: header
 
       header =
         if omissions != nil,
           do: header <> "\n# omissions: #{Jason.encode!(omissions)}",
           else: header
+
+      header = if cursor != nil, do: header <> "\n# cursor: #{cursor}", else: header
 
       "#{header}\n#{content}"
     end
@@ -110,6 +124,50 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
     end
   end
 
+  # :anchor_correlation — one merged, time-sorted, source-tagged timeline
+  # per window section (anchor-mode correlate). Section boundaries are
+  # explicit `== window ... ==` headers so multiple anchor hits stay
+  # distinguishable; the meta line carries the honesty fields
+  # (anchors_unparsed_ts, unparsed_ts, omissions).
+  def format(:anchor_correlation, result, format_opt) do
+    if format_opt == "json" do
+      Jason.encode!(result)
+    else
+      meta_map =
+        result
+        |> Map.take([
+          :anchor,
+          :window,
+          :total_anchors,
+          :anchors_unparsed_ts,
+          :total_entries,
+          :files_matched,
+          :unparsed_ts,
+          :omissions
+        ])
+        |> Map.reject(fn {_k, v} -> v == nil end)
+
+      sections =
+        Enum.map_join(result.sections, "\n\n", fn section ->
+          "== window #{section.from} .. #{section.to} (#{section.anchor_count} anchor#{plural(section.anchor_count)}) ==\n" <>
+            ToonEncoder.format_response(%{entries: section.entries})
+        end)
+
+      body = if result.sections == [], do: "(no anchor windows)", else: sections
+      "# #{Jason.encode!(meta_map)}\n#{body}"
+    end
+  end
+
+  # :aggregate — op: values carries an :entries histogram (TOON table);
+  # exists/count are scalar maps and encode as JSON either way.
+  def format(:aggregate, %{entries: _} = result, format_opt) do
+    ToonEncoder.format_response(result, format_opt)
+  end
+
+  def format(:aggregate, result, _format_opt) do
+    Jason.encode!(result)
+  end
+
   # :rollup — message-template rows with meta (search_logs / all_errors
   # with rollup: true)
   def format(:rollup, data, format_opt) do
@@ -127,4 +185,7 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
         ToonEncoder.format_response(%{matches: r.matches})
     end)
   end
+
+  defp plural(1), do: ""
+  defp plural(_), do: "s"
 end
