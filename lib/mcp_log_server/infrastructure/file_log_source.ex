@@ -10,8 +10,11 @@ defmodule McpLogServer.Infrastructure.FileLogSource do
   cleanup. The `handle` this adapter produces is the absolute file path.
 
   Local files are reported with `live?: false` — a file on disk is a static
-  snapshot. Future streamed adapters report `live?: true` for still-growing
-  sources.
+  snapshot — EXCEPT ingest files of declared `LOG_SOURCES` streams
+  (`<name>.log` with a registered worker in
+  `McpLogServer.Infrastructure.SourceStatus`), which are reported with
+  `live?: true` plus the source name and worker status. Rotated files
+  (`<name>.1.log` ...) stay static: only the actively-appended file is live.
   """
 
   @behaviour McpLogServer.Ports.LogSource
@@ -21,6 +24,7 @@ defmodule McpLogServer.Infrastructure.FileLogSource do
   alias McpLogServer.Domain.JsonLogParser
   alias McpLogServer.Infrastructure.EnvConfig
   alias McpLogServer.Infrastructure.FormatCache
+  alias McpLogServer.Infrastructure.SourceStatus
 
   @impl true
   def list(log_dir) do
@@ -118,20 +122,35 @@ defmodule McpLogServer.Infrastructure.FileLogSource do
   def file_info(path) do
     stat = File.stat!(path)
     max_bytes = EnvConfig.max_log_file_mb() * 1_048_576
+    basename = Path.basename(path)
 
-    info = %{
-      name: Path.basename(path),
-      path: path,
-      size_bytes: stat.size,
-      modified: NaiveDateTime.to_iso8601(stat.mtime |> NaiveDateTime.from_erl!()),
-      live?: false
-    }
+    info =
+      %{
+        name: basename,
+        path: path,
+        size_bytes: stat.size,
+        modified: NaiveDateTime.to_iso8601(stat.mtime |> NaiveDateTime.from_erl!()),
+        live?: false
+      }
+      |> with_live_source(basename)
 
     if stat.size > max_bytes do
       actual_mb = Float.round(stat.size / 1_048_576, 1)
       Map.put(info, :warning, "exceeds max size (#{actual_mb} MB)")
     else
       info
+    end
+  end
+
+  # `demo.log` is live iff a source worker named "demo" is registered.
+  # `demo.1.log` roots to "demo.1" — never a valid source name — so rotated
+  # files stay static snapshots.
+  defp with_live_source(info, basename) do
+    source = Path.rootname(basename, ".log")
+
+    case SourceStatus.get(source) do
+      nil -> info
+      status -> Map.merge(info, %{live?: true, source: source, status: status})
     end
   end
 

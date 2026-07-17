@@ -33,6 +33,8 @@ defmodule McpLogServer.Ports.LogSource do
           required(:size_bytes) => non_neg_integer(),
           required(:modified) => String.t(),
           required(:live?) => boolean(),
+          optional(:source) => String.t(),
+          optional(:status) => :running | :backing_off | :dead,
           optional(:warning) => String.t()
         }
 
