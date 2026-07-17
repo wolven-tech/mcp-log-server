@@ -13,6 +13,7 @@ defmodule McpLogServer.UseCases.SearchLogs do
   silently.
   """
 
+  alias McpLogServer.Domain.Cursor
   alias McpLogServer.Domain.LogSearch
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.Ports.LogSource
@@ -31,15 +32,25 @@ defmodule McpLogServer.UseCases.SearchLogs do
     * `:context` - context lines around match (default: 0)
     * `:rollup` - collapse matches into message templates (default: false);
       `file` may be `nil`/`""` to scan all logs
+    * `:cursor` - opaque cursor from a previous call; only lines appended
+      since are searched (line-oriented path only — incompatible with
+      `:field` and `:rollup`)
     * `:source` - `LogSource` implementation (defaults to configured adapter)
   """
   @spec run(String.t(), String.t() | nil, String.t(), keyword()) ::
           {:ok, LogSearch.search_result() | RollupScan.rollup_result()} | {:error, String.t()}
   def run(log_dir, file, pattern, opts \\ []) do
-    if Keyword.get(opts, :rollup, false) do
-      run_rollup(log_dir, file, pattern, opts)
-    else
-      run_search(log_dir, file, pattern, opts)
+    cursor_arg = Keyword.get(opts, :cursor)
+
+    cond do
+      Keyword.get(opts, :rollup, false) and cursor_arg != nil ->
+        {:error, "cursor cannot be combined with rollup"}
+
+      Keyword.get(opts, :rollup, false) ->
+        run_rollup(log_dir, file, pattern, opts)
+
+      true ->
+        run_search(log_dir, file, pattern, opts)
     end
   end
 
@@ -58,14 +69,32 @@ defmodule McpLogServer.UseCases.SearchLogs do
 
       case {source.format(handle), field} do
         {fmt, field} when fmt in [:json_lines, :json_array] and field != nil ->
-          LogSource.stream_entries(source, handle, fmt)
-          |> LogSearch.match_json_field(regex, pattern, field, file_name, max_results, since, until_dt, ts_opts)
+          if Keyword.get(opts, :cursor) != nil do
+            {:error, "cursor cannot be combined with field (JSON field search)"}
+          else
+            LogSource.stream_entries(source, handle, fmt)
+            |> LogSearch.match_json_field(regex, pattern, field, file_name, max_results, since, until_dt, ts_opts)
+          end
 
         _ ->
-          handle
-          |> source.stream_lines()
-          |> Stream.with_index(1)
-          |> LogSearch.match_plain(regex, pattern, file_name, max_results, context_lines, since, until_dt, ts_opts)
+          # Line-oriented path: read the whole content once so the polling
+          # cursor (byte offset + rotation guard) can be computed. The
+          # returned cursor lets the next poll search only appended lines.
+          with {:ok, content} <- source.read(handle) do
+            {start_offset, reset?} =
+              Cursor.resolve(Keyword.get(opts, :cursor), file_name, content)
+
+            {lines, start_line} = Cursor.slice_lines(content, start_offset)
+
+            {:ok, result} =
+              lines
+              |> Enum.with_index(start_line)
+              |> LogSearch.match_plain(regex, pattern, file_name, max_results, context_lines, since, until_dt, ts_opts)
+
+            result = Map.put(result, :cursor, Cursor.encode(Cursor.state_for(file_name, content)))
+            result = if reset?, do: Map.put(result, :cursor_reset, true), else: result
+            {:ok, result}
+          end
       end
     end
   end

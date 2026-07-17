@@ -30,7 +30,10 @@ defmodule McpLogServer.Domain.LogSearch do
           required(:returned_matches) => non_neg_integer(),
           required(:matches) => [log_entry()],
           optional(:unparsed_ts) => non_neg_integer(),
-          optional(:omissions) => Omissions.t()
+          optional(:omissions) => Omissions.t(),
+          # attached by the search use-case on line-oriented scans (P6)
+          optional(:cursor) => String.t(),
+          optional(:cursor_reset) => true
         }
 
   @doc """

@@ -21,7 +21,10 @@ defmodule McpLogServer.Tools.SearchLogs do
         "With rollup: true, matches are collapsed into message templates (volatile tokens like " <>
         "timestamps/UUIDs/ids normalized away) with count, instances_seen (e.g. \"1/9\"), and " <>
         "first/last timestamps — omit file to scan ALL logs and answer \"did X happen, on how " <>
-        "many instances, when?\" in one call."
+        "many instances, when?\" in one call. " <>
+        "Line searches also return an opaque cursor; pass it back to search ONLY lines appended " <>
+        "since (cursor_reset: true flags a full re-window after rotation/truncation). " <>
+        "cursor is incompatible with field and rollup."
 
   @impl true
   def schema do
@@ -36,6 +39,7 @@ defmodule McpLogServer.Tools.SearchLogs do
         rollup: %{type: "boolean", description: "Collapse matches into message templates with count, instances_seen, first/last timestamps (default: false)", default: false},
         since: %{type: "string", description: "Only include lines from this time onward. ISO 8601 or relative shorthand (e.g. \"30m\", \"2h\")"},
         until: %{type: "string", description: "Only include lines up to this time. ISO 8601 or relative shorthand"},
+        cursor: %{type: "string", description: "Opaque cursor from a previous call; searches only lines appended since, and returns a fresh cursor. Incompatible with field and rollup"},
         format: %{type: "string", enum: ["toon", "json"], description: "Output format (default: toon)"}
       },
       required: ["pattern"]
@@ -58,6 +62,13 @@ defmodule McpLogServer.Tools.SearchLogs do
       opts = [max_results: max_results, context: context]
       opts = if field, do: Keyword.put(opts, :field, field), else: opts
       opts = if rollup, do: Keyword.put(opts, :rollup, true), else: opts
+
+      opts =
+        case Map.get(args, "cursor") do
+          c when is_binary(c) and c != "" -> Keyword.put(opts, :cursor, c)
+          _ -> opts
+        end
+
       opts = maybe_add_time_opts(opts, args)
 
       case UseCases.SearchLogs.run(log_dir, file, pattern, opts) do
