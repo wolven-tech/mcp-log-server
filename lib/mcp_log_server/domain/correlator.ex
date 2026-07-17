@@ -22,12 +22,13 @@ defmodule McpLogServer.Domain.Correlator do
         }
 
   @type correlation_result :: %{
-          value: String.t(),
-          field: String.t() | nil,
-          total_matches: non_neg_integer(),
-          files_matched: [String.t()],
-          timeline: [timeline_entry()],
-          unparsed_ts: non_neg_integer()
+          required(:value) => String.t(),
+          required(:field) => String.t() | nil,
+          required(:total_matches) => non_neg_integer(),
+          required(:files_matched) => [String.t()],
+          required(:timeline) => [timeline_entry()],
+          required(:unparsed_ts) => non_neg_integer(),
+          optional(:omissions) => map()
         }
 
   @doc """
@@ -143,6 +144,18 @@ defmodule McpLogServer.Domain.Correlator do
   @spec aggregate_field_values(Enumerable.t(), pos_integer()) :: [map()]
   def aggregate_field_values(pairs, max_values) do
     pairs
+    |> aggregate_field_values()
+    |> Enum.take(max_values)
+  end
+
+  @doc """
+  Aggregate `{value, timestamp}` pairs into per-value stats sorted by count
+  (descending), uncapped — callers that cap can then report how many values
+  the cap withheld.
+  """
+  @spec aggregate_field_values(Enumerable.t()) :: [map()]
+  def aggregate_field_values(pairs) do
+    pairs
     |> Enum.reduce(%{}, fn {value, timestamp}, acc ->
       Map.update(acc, value, %{count: 1, first_seen: timestamp, last_seen: timestamp}, fn stat ->
         %{
@@ -161,7 +174,6 @@ defmodule McpLogServer.Domain.Correlator do
       }
     end)
     |> Enum.sort_by(& &1.count, :desc)
-    |> Enum.take(max_values)
   end
 
   # -- Matching --

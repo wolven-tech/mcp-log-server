@@ -12,9 +12,15 @@ defmodule McpLogServer.Domain.LogSearch do
   pass the filter (fail-open), and the counter makes that degradation
   observable instead of silent. The counter is returned as data, never as a
   side effect, and costs nothing when no time filter is applied.
+
+  When the `max_results` cap is actually hit, results carry an `omissions`
+  block (`McpLogServer.Domain.Omissions`) saying how many matches were
+  withheld — a capped result must never look complete. The block is absent
+  when every match was returned.
   """
 
   alias McpLogServer.Domain.JsonLogParser
+  alias McpLogServer.Domain.Omissions
   alias McpLogServer.Domain.TimeFilter
 
   @type log_entry :: %{line_number: pos_integer(), content: String.t()}
@@ -23,7 +29,8 @@ defmodule McpLogServer.Domain.LogSearch do
           required(:pattern) => String.t(),
           required(:returned_matches) => non_neg_integer(),
           required(:matches) => [log_entry()],
-          optional(:unparsed_ts) => non_neg_integer()
+          optional(:unparsed_ts) => non_neg_integer(),
+          optional(:omissions) => Omissions.t()
         }
 
   @doc """
@@ -48,10 +55,15 @@ defmodule McpLogServer.Domain.LogSearch do
         {acc, unparsed}
       end)
 
-    matches =
+    all_matched =
       in_range
       |> Enum.reverse()
       |> Enum.filter(fn {line, _idx} -> Regex.match?(regex, line) end)
+
+    total_matched = length(all_matched)
+
+    matches =
+      all_matched
       |> Enum.take(max_results)
       |> Enum.map(fn {line, idx} ->
         entry = %{line_number: idx, content: line}
@@ -78,7 +90,11 @@ defmodule McpLogServer.Domain.LogSearch do
     }
 
     result = if filter_active?, do: Map.put(result, :unparsed_ts, unparsed), else: result
-    {:ok, result}
+
+    omissions =
+      Omissions.cap(Omissions.new(), :matches, total_matched, max_results, "first #{max_results}")
+
+    {:ok, Omissions.attach(result, omissions)}
   end
 
   @doc """
@@ -105,35 +121,64 @@ defmodule McpLogServer.Domain.LogSearch do
           {acc, unparsed}
         end)
 
+      all_matched = Enum.reverse(matched)
+
       matches =
-        matched
-        |> Enum.reverse()
+        all_matched
         |> Enum.take(max_results)
         |> Enum.map(fn {entry, idx} -> JsonLogParser.json_entry_to_toon_map(entry, idx) end)
 
+      omissions =
+        Omissions.cap(
+          Omissions.new(),
+          :matches,
+          length(all_matched),
+          max_results,
+          "first #{max_results}"
+        )
+
       {:ok,
-       %{
-         file: file_name,
-         pattern: pattern,
-         returned_matches: length(matches),
-         matches: matches,
-         unparsed_ts: unparsed
-       }}
+       Omissions.attach(
+         %{
+           file: file_name,
+           pattern: pattern,
+           returned_matches: length(matches),
+           matches: matches,
+           unparsed_ts: unparsed
+         },
+         omissions
+       )}
     else
       # No time filter: keep the lazy early-stop path (zero parse cost).
-      matches =
+      # Take one extra match to learn whether the cap was hit; the honest
+      # marker is `capped_at` because the full count is unknown here.
+      taken =
         entries
         |> Stream.filter(fn {entry, _idx} -> field_match?.(entry) end)
+        |> Enum.take(max_results + 1)
+
+      capped? = length(taken) > max_results
+
+      matches =
+        taken
         |> Enum.take(max_results)
         |> Enum.map(fn {entry, idx} -> JsonLogParser.json_entry_to_toon_map(entry, idx) end)
 
+      omissions =
+        if capped?,
+          do: Omissions.capped_at(Omissions.new(), :matches, max_results),
+          else: Omissions.new()
+
       {:ok,
-       %{
-         file: file_name,
-         pattern: pattern,
-         returned_matches: length(matches),
-         matches: matches
-       }}
+       Omissions.attach(
+         %{
+           file: file_name,
+           pattern: pattern,
+           returned_matches: length(matches),
+           matches: matches
+         },
+         omissions
+       )}
     end
   end
 
