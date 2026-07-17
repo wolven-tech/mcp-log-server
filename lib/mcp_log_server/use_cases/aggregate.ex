@@ -19,12 +19,25 @@ defmodule McpLogServer.UseCases.Aggregate do
     * with `since`/`until` active, `unparsed_ts` counts fail-open lines;
     * files skipped by the read-size guardrail land in
       `omissions.skipped_files`, never disappear.
+
+  ## Indexed fast paths (issue #7 P7)
+
+  Two accelerations, both result-identical to the linear scan (`:miss` on
+  any doubt degrades transparently, reported via `index_used: false`):
+
+    * **absence skip** — without time/pattern filters, a file whose index
+      PROVES the field absent contributes its stored `json_lines` /
+      `non_json` totals without being read;
+    * **since seek** — with a `since` bound, the scan starts at the
+      deepest byte offset below which every line is proven excluded
+      (entry-timestamp semantics — the same parse this scan uses).
   """
 
   alias McpLogServer.Domain.FieldAggregator
   alias McpLogServer.Domain.JsonLogParser
   alias McpLogServer.Domain.LogSearch
   alias McpLogServer.Domain.Omissions
+  alias McpLogServer.Domain.SparseIndex
   alias McpLogServer.Domain.TimeFilter
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.UseCases.Deps
@@ -64,7 +77,8 @@ defmodule McpLogServer.UseCases.Aggregate do
       keys = String.split(field, ".")
 
       with {:ok, files} <- target_files(source, log_dir, file) do
-        initial = %{agg: FieldAggregator.new(), unparsed: 0, om: Omissions.new()}
+        idx = Deps.log_index(opts)
+        initial = %{agg: FieldAggregator.new(), unparsed: 0, om: Omissions.new(), used: false}
 
         state =
           Enum.reduce(files, initial, fn name, state ->
@@ -73,7 +87,7 @@ defmodule McpLogServer.UseCases.Aggregate do
                 %{state | om: Omissions.skipped_file(state.om, name, reason)}
 
               {:ok, handle} ->
-                scan_file(source, handle, name, keys, regex, {since, until_dt, filter?}, opts, state)
+                scan_file(source, idx, handle, name, keys, regex, {since, until_dt, filter?}, opts, state)
             end
           end)
 
@@ -83,7 +97,8 @@ defmodule McpLogServer.UseCases.Aggregate do
           Map.merge(result, %{
             field: field,
             op: Atom.to_string(op),
-            files_scanned: length(files) - length(Map.get(state.om, :skipped_files, []))
+            files_scanned: length(files) - length(Map.get(state.om, :skipped_files, [])),
+            index_used: state.used
           })
 
         result = if filter?, do: Map.put(result, :unparsed_ts, state.unparsed), else: result
@@ -103,7 +118,7 @@ defmodule McpLogServer.UseCases.Aggregate do
     with {:ok, _handle} <- source.resolve_readable(log_dir, file), do: {:ok, [file]}
   end
 
-  defp scan_file(source, handle, name, keys, regex, bounds, opts, state) do
+  defp scan_file(source, idx, handle, name, keys, regex, {since, _until_dt, filter?} = bounds, opts, state) do
     ts_opts = TsOpts.build(source, handle, name, opts)
 
     case source.format(handle) do
@@ -111,15 +126,67 @@ defmodule McpLogServer.UseCases.Aggregate do
         scan_array_entries(source, handle, keys, regex, bounds, ts_opts, state)
 
       _line_oriented ->
-        scan_lines(source, handle, keys, regex, bounds, ts_opts, state)
+        cond do
+          # Absence skip: only sound with NO filters — a pattern or time
+          # bound changes which lines count, so the stored totals would
+          # not equal the scan's contribution.
+          not filter? and regex == nil ->
+            case absence_proof(idx, handle, keys) do
+              {:ok, fs} ->
+                %{state | agg: FieldAggregator.add_absent_file(state.agg, fs.json_lines, fs.non_json), used: true}
+
+              :miss ->
+                scan_lines(source, handle, keys, regex, bounds, ts_opts, state)
+            end
+
+          since != nil ->
+            case idx.seek(handle, since, :entry) do
+              {:ok, %{offset: offset}} when offset > 0 ->
+                case stream_from(source, handle, offset) do
+                  {:ok, stream} ->
+                    scan_line_stream(stream, keys, regex, bounds, ts_opts, %{state | used: true})
+
+                  :unsupported ->
+                    scan_lines(source, handle, keys, regex, bounds, ts_opts, state)
+                end
+
+              _ ->
+                scan_lines(source, handle, keys, regex, bounds, ts_opts, state)
+            end
+
+          true ->
+            scan_lines(source, handle, keys, regex, bounds, ts_opts, state)
+        end
+    end
+  end
+
+  defp absence_proof(idx, handle, keys) do
+    case idx.field_stats(handle) do
+      {:ok, fs} ->
+        proof = %{fields_capped: fs.capped, present: fs.present, opaque: fs.opaque}
+        if SparseIndex.key_absent?(proof, keys), do: {:ok, fs}, else: :miss
+
+      :miss ->
+        :miss
+    end
+  end
+
+  defp stream_from(source, handle, offset) do
+    if Code.ensure_loaded?(source) and function_exported?(source, :stream_lines_from, 2) do
+      {:ok, source.stream_lines_from(handle, offset)}
+    else
+      :unsupported
     end
   end
 
   # :plain and :json_lines both scan line by line; JSON-ness is decided per
   # line so a mixed file (NDJSON with stray plain lines) counts honestly.
-  defp scan_lines(source, handle, keys, regex, {since, until_dt, filter?}, ts_opts, state) do
-    source.stream_lines(handle)
-    |> Enum.reduce(state, fn line, state ->
+  defp scan_lines(source, handle, keys, regex, bounds, ts_opts, state) do
+    scan_line_stream(source.stream_lines(handle), keys, regex, bounds, ts_opts, state)
+  end
+
+  defp scan_line_stream(stream, keys, regex, {since, until_dt, filter?}, ts_opts, state) do
+    Enum.reduce(stream, state, fn line, state ->
       case Jason.decode(line) do
         {:ok, map} when is_map(map) ->
           entry = JsonLogParser.enrich(map)

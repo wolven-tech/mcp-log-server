@@ -18,6 +18,7 @@ defmodule McpLogServer.UseCases.SearchLogs do
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.Ports.LogSource
   alias McpLogServer.UseCases.Deps
+  alias McpLogServer.UseCases.IndexSeek
   alias McpLogServer.UseCases.RollupScan
   alias McpLogServer.UseCases.TsOpts
 
@@ -81,8 +82,20 @@ defmodule McpLogServer.UseCases.SearchLogs do
           # cursor (byte offset + rotation guard) can be computed. The
           # returned cursor lets the next poll search only appended lines.
           with {:ok, content} <- source.read(handle) do
-            {start_offset, reset?} =
-              Cursor.resolve(Keyword.get(opts, :cursor), file_name, content)
+            cursor_arg = Keyword.get(opts, :cursor)
+            {start_offset, reset?} = Cursor.resolve(cursor_arg, file_name, content)
+
+            # Index seek (issue #7 P7): with a since bound, no cursor, and
+            # no context lines, skip the prefix the index PROVES excluded.
+            # Context is index-incompatible: context lines around an early
+            # match may lie before the bound (the full scan keeps them),
+            # so seeking would change output — linear scan instead.
+            {start_offset, index_used} =
+              if cursor_arg == nil and context_lines == 0 do
+                IndexSeek.content_offset(Deps.log_index(opts), handle, since, content)
+              else
+                {start_offset, if(since != nil and cursor_arg == nil, do: false, else: nil)}
+              end
 
             {lines, start_line} = Cursor.slice_lines(content, start_offset)
 
@@ -93,6 +106,10 @@ defmodule McpLogServer.UseCases.SearchLogs do
 
             result = Map.put(result, :cursor, Cursor.encode(Cursor.state_for(file_name, content)))
             result = if reset?, do: Map.put(result, :cursor_reset, true), else: result
+
+            result =
+              if index_used != nil, do: Map.put(result, :index_used, index_used), else: result
+
             {:ok, result}
           end
       end

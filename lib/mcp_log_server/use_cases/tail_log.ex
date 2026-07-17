@@ -18,6 +18,14 @@ defmodule McpLogServer.UseCases.TailLog do
   polling loop for a live deploy without re-fetching the same window. If
   the file was rotated/truncated (cursor invalid), the result is a flagged
   full window with `:cursor_reset` true instead of wrong increments.
+
+  With `:since` (and no cursor) the persistent index (issue #7 P7) is
+  consulted for a safe seek point: a byte offset below which every line is
+  PROVEN excluded by the filter (all timestamps parsed and strictly before
+  `since`), letting the scan skip the prefix. Results are identical either
+  way; `:index_used` reports whether the seek happened, and any
+  missing/stale/corrupt index degrades to the full scan with
+  `index_used: false`.
   """
 
   alias McpLogServer.Domain.Cursor
@@ -25,6 +33,7 @@ defmodule McpLogServer.UseCases.TailLog do
   alias McpLogServer.Domain.TimeFilter
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.UseCases.Deps
+  alias McpLogServer.UseCases.IndexSeek
   alias McpLogServer.UseCases.TsOpts
 
   @doc """
@@ -38,40 +47,54 @@ defmodule McpLogServer.UseCases.TailLog do
     * `:ts_format` - compiled declared timestamp format override (tests)
 
   Returns `{:ok, %{content: String.t(), unparsed_ts: non_neg_integer() | nil,
-  cursor: String.t(), cursor_reset: boolean(), omissions: Omissions.t()}}`.
+  cursor: String.t(), cursor_reset: boolean(), omissions: Omissions.t()}}`,
+  plus `:index_used` when a `:since` bound (without cursor) made the query
+  index-eligible.
   """
   @spec run(String.t(), String.t(), pos_integer(), keyword()) ::
           {:ok,
            %{
-             content: String.t(),
-             unparsed_ts: non_neg_integer() | nil,
-             cursor: String.t(),
-             cursor_reset: boolean(),
-             omissions: Omissions.t()
+             :content => String.t(),
+             :unparsed_ts => non_neg_integer() | nil,
+             :cursor => String.t(),
+             :cursor_reset => boolean(),
+             :omissions => Omissions.t(),
+             optional(:index_used) => boolean()
            }}
           | {:error, String.t()}
   def run(log_dir, file, n, opts \\ []) do
     source = Deps.log_source(opts)
     since = TimestampParser.parse_time(Keyword.get(opts, :since))
+    cursor_arg = Keyword.get(opts, :cursor)
 
     with {:ok, handle} <- source.resolve_readable(log_dir, file),
          {:ok, content} <- source.read(handle) do
       basename = Path.basename(file)
-      {start_offset, reset?} = Cursor.resolve(Keyword.get(opts, :cursor), basename, content)
+      {start_offset, reset?} = Cursor.resolve(cursor_arg, basename, content)
+
+      {start_offset, index_used} =
+        if cursor_arg == nil do
+          IndexSeek.content_offset(Deps.log_index(opts), handle, since, content)
+        else
+          {start_offset, nil}
+        end
+
       {lines, _start_line} = Cursor.slice_lines(content, start_offset)
 
       {lines, unparsed} = filter(source, handle, file, lines, since, opts)
       total = length(lines)
       out = lines |> Enum.take(-n) |> Enum.join("\n")
 
-      {:ok,
-       %{
-         content: out,
-         unparsed_ts: unparsed,
-         cursor: Cursor.encode(Cursor.state_for(basename, content)),
-         cursor_reset: reset?,
-         omissions: Omissions.cap(Omissions.new(), :lines, total, n, "newest #{n}")
-       }}
+      result = %{
+        content: out,
+        unparsed_ts: unparsed,
+        cursor: Cursor.encode(Cursor.state_for(basename, content)),
+        cursor_reset: reset?,
+        omissions: Omissions.cap(Omissions.new(), :lines, total, n, "newest #{n}")
+      }
+
+      result = if index_used != nil, do: Map.put(result, :index_used, index_used), else: result
+      {:ok, result}
     end
   end
 

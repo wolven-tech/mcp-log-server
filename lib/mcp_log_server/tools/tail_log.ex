@@ -55,6 +55,12 @@ defmodule McpLogServer.Tools.TailLog do
         data = %{file: file, lines: lines, content: content, cursor: result.cursor}
         data = if unparsed_ts != nil, do: Map.put(data, :unparsed_ts, unparsed_ts), else: data
         data = if result.cursor_reset, do: Map.put(data, :cursor_reset, true), else: data
+
+        data =
+          case Map.get(result, :index_used) do
+            nil -> data
+            used -> Map.put(data, :index_used, used)
+          end
         data = McpLogServer.Domain.Omissions.attach(data, omissions)
         {:ok, ResponseFormatter.format(:tail, data, format)}
 

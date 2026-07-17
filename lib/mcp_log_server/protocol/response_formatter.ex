@@ -19,6 +19,7 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
           | :aggregate
           | :multi_file_errors
           | :rollup
+          | :summarize
 
   @doc """
   Format structured tool output into a string ready for the MCP response.
@@ -54,6 +55,7 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
     omissions = Map.get(data, :omissions)
     cursor = Map.get(data, :cursor)
     cursor_reset = Map.get(data, :cursor_reset)
+    index_used = Map.get(data, :index_used)
 
     if format_opt == "json" do
       payload = %{file: file, lines: lines, content: content}
@@ -66,6 +68,9 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
       payload =
         if cursor_reset != nil, do: Map.put(payload, :cursor_reset, cursor_reset), else: payload
 
+      payload =
+        if index_used != nil, do: Map.put(payload, :index_used, index_used), else: payload
+
       payload = if omissions != nil, do: Map.put(payload, :omissions, omissions), else: payload
 
       Jason.encode!(payload)
@@ -73,6 +78,7 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
       header = "# tail #{file} (last #{lines} lines)"
       header = if unparsed_ts != nil, do: header <> "\n# unparsed_ts: #{unparsed_ts}", else: header
       header = if cursor_reset != nil, do: header <> "\n# cursor_reset: true", else: header
+      header = if index_used != nil, do: header <> "\n# index_used: #{index_used}", else: header
 
       header =
         if omissions != nil,
@@ -172,6 +178,46 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
   # with rollup: true)
   def format(:rollup, data, format_opt) do
     ToonEncoder.format_response(data, format_opt)
+  end
+
+  # :summarize — window-vs-baseline diff (summarize). One meta line with
+  # the bounds, rates, and honesty fields, then one TOON section per list.
+  def format(:summarize, result, format_opt) do
+    if format_opt == "json" do
+      Jason.encode!(result)
+    else
+      meta =
+        result
+        |> Map.take([
+          :window,
+          :baseline,
+          :files_scanned,
+          :sources_seen,
+          :error_rate,
+          :unparsed_ts,
+          :index_used,
+          :omissions
+        ])
+        |> Map.reject(fn {_k, v} -> v == nil end)
+
+      sections =
+        [
+          {"new templates", result.new_templates},
+          {"gone templates", result.gone_templates},
+          {"volume by source", result.volume}
+        ]
+        |> Enum.map_join("\n\n", fn {title, rows} ->
+          body =
+            case rows do
+              [] -> "(none)"
+              rows -> ToonEncoder.format_response(%{entries: rows})
+            end
+
+          "== #{title} (#{length(rows)}) ==\n" <> body
+        end)
+
+      "# #{Jason.encode!(meta)}\n#{sections}"
+    end
   end
 
   # :multi_file_errors — aggregated per-file errors (all_errors)
