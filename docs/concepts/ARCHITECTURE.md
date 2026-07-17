@@ -1,17 +1,42 @@
 ---
 title: Architecture
-description: Layered architecture design and module breakdown
+description: Clean architecture layers, ports, and module breakdown
 status: active
 audience: [developers]
 difficulty: intermediate
 created: 2026-03-18
-lastModified: 2026-03-20
-tags: [architecture, design, elixir, otp]
+lastModified: 2026-07-17
+tags: [architecture, design, elixir, otp, clean-architecture]
 ---
 
 # Architecture
 
-MCP Log Server follows a layered architecture where each layer has a single responsibility and dependencies flow inward. After a SOLID refactoring pass, the codebase separates tool definitions from domain logic and uses a behaviour-based dispatch pattern that makes adding new tools trivial.
+MCP Log Server follows an explicit clean architecture: a pure domain core,
+an application layer of use-cases, infrastructure adapters behind ports
+(behaviours), and a thin MCP interface layer.
+
+**The dependency rule: dependencies point inward.**
+
+```
+interface (tools, server, protocol, transport)
+    │
+    ▼
+application (use_cases)  ──▶  ports (behaviours)
+    │                              ▲
+    ▼                              │ implements
+domain (pure functions)       infrastructure (adapters)
+```
+
+- **Domain** imports nothing outside the domain (plus the compiled-pattern
+  data in `Config.Patterns`). No `File.*`, no `System.get_env`, no
+  `Application.get_env` — pure functions over values and enumerables.
+- **Use-cases** import domain + ports only. Adapters are resolved through
+  configuration (`McpLogServer.UseCases.Deps`), never named directly.
+- **Tools** import use-cases + protocol only: validate params → call
+  use-case → format response.
+- **Infrastructure** implements the ports; nothing imports it except the
+  composition root (`Application`/`Server`) and the port wiring in
+  `config/config.exs`.
 
 ---
 
@@ -19,25 +44,30 @@ MCP Log Server follows a layered architecture where each layer has a single resp
 
 ```
 ┌───────────────────────────────────────────────────────────┐
-│                   Transport (stdio)                       │  I/O boundary
+│                Transport (stdio)                          │  I/O boundary
 ├───────────────────────────────────────────────────────────┤
-│                   Protocol (JSON-RPC)                     │  Message parsing & encoding
+│                Protocol (JSON-RPC, TOON)                  │  Message parsing & encoding
 ├───────────────────────────────────────────────────────────┤
-│                   Server (routing)                        │  Method dispatch
+│                Server (routing)                           │  Method dispatch
 ├───────────────────────────────────────────────────────────┤
-│          Tools (behaviour + 9 tool modules)               │  Argument parsing & formatting
-│  ┌─────────┬──────────┬────────────┬────────────────┐     │
-│  │Registry │Dispatcher│  Helpers   │ Tool behaviour  │     │
-│  └─────────┴──────────┴────────────┴────────────────┘     │
+│         Tools (behaviour + 10 thin tool modules)          │  Param validation & formatting
 ├───────────────────────────────────────────────────────────┤
-│          Domain (7 focused modules + facade)              │  Pure business logic
-│  ┌──────────┬────────┬────────┬───────┬──────────────┐    │
-│  │FileAccess│LogTail │LogSearch│Errors │StatsCollector│    │
-│  ├──────────┼────────┴────────┼───────┴──────────────┤    │
-│  │Correlator│ TimeRangeCalc   │  FormatDispatch       │    │
-│  └──────────┴─────────────────┴───────────────────────┘    │
+│         Use-cases (application layer)                     │  Orchestration over ports
+│  ListLogs · TailLog · SearchLogs · GetErrors ·            │
+│  CollectStats · TimeRange · Correlate · TraceIds ·        │
+│  AllErrors · SyncLogs · LogReader (facade) · Deps         │
+├──────────────────────────┬────────────────────────────────┤
+│  Ports (behaviours)      │  Infrastructure (adapters)     │
+│  LogSource               │  FileLogSource                 │
+│  Config                  │  EnvConfig                     │
+│  LogSync                 │  CloudSync · FormatCache       │
+├──────────────────────────┴────────────────────────────────┤
+│         Domain (pure functions only)                      │
+│  TimestampParser · TimeFilter · JsonLogParser ·           │
+│  FormatDetector · ErrorExtractor · LogSearch ·            │
+│  StatsCollector · TimeRangeCalc · Correlator              │
 ├───────────────────────────────────────────────────────────┤
-│                   Config (Patterns)                       │  persistent_term cache
+│         Config (Patterns — compiled once, read as data)   │
 └───────────────────────────────────────────────────────────┘
 ```
 
@@ -45,91 +75,159 @@ MCP Log Server follows a layered architecture where each layer has a single resp
 
 **Module**: `McpLogServer.Transport.Stdio`
 
-GenServer that owns the stdin/stdout I/O. Reads JSON lines from stdin, delegates to the Server, and writes responses to stdout. This is the only module that touches I/O streams.
+GenServer that owns the stdin/stdout I/O. Reads JSON lines from stdin,
+delegates to the Server, and writes responses to stdout. This is the only
+module that touches I/O streams.
 
 ### Protocol Layer
 
 **Modules**: `McpLogServer.Protocol.JsonRpc`, `McpLogServer.Protocol.ToonEncoder`, `McpLogServer.Protocol.ResponseFormatter`
 
-Pure functions for parsing JSON-RPC 2.0 requests and building responses. The TOON encoder converts tabular data into the token-optimized format. `ResponseFormatter` centralises all tool output formatting (shape-based dispatch for entries, tail, search results, stats, correlation timelines, and multi-file errors), keeping that concern out of individual tool modules.
+Pure functions for parsing JSON-RPC 2.0 requests and building responses. The
+TOON encoder converts tabular data into the token-optimized format.
+`ResponseFormatter` centralises all tool output formatting, keeping that
+concern out of individual tool modules.
 
 ### Server Layer
 
 **Module**: `McpLogServer.Server`
 
-Routes incoming MCP methods (`initialize`, `tools/list`, `tools/call`) to the appropriate handlers. For `tools/call`, it delegates to the Dispatcher with the tool name, arguments, and log directory. Wires transport, protocol, and tools together.
+Routes incoming MCP methods (`initialize`, `tools/list`, `tools/call`) to the
+appropriate handlers. For `tools/call`, it delegates to the Dispatcher with
+the tool name, arguments, and log directory.
 
-### Tools Layer
+### Tools Layer (interface)
 
-**Modules**: `McpLogServer.Tools.Tool` (behaviour), `McpLogServer.Tools.Registry`, `McpLogServer.Tools.Dispatcher`, `McpLogServer.Tools.Helpers`, plus 9 tool modules.
+**Modules**: `McpLogServer.Tools.Tool` (behaviour), `Registry`, `Dispatcher`, `Helpers`, plus 10 tool modules.
 
-This layer is structured around the `Tool` behaviour, which defines four callbacks:
+Each tool implements the `Tool` behaviour (`name/0`, `description/0`,
+`schema/0`, `execute/2`) and is deliberately thin: it coerces and validates
+MCP arguments, calls exactly one use-case, and formats the result via
+`ResponseFormatter`. No business logic lives here.
 
-```elixir
-@callback name() :: String.t()
-@callback description() :: String.t()
-@callback schema() :: map()
-@callback execute(args :: map(), log_dir :: String.t()) :: {:ok, String.t()} | {:error, String.t()}
-```
-
-Each tool is a standalone module that implements this behaviour. The tool modules are:
-
-| Module | Tool name | Domain module called |
+| Module | Tool name | Use-case called |
 |---|---|---|
-| `ListLogs` | `list_logs` | `FileAccess` |
-| `TailLog` | `tail_log` | `LogTail` |
-| `SearchLogs` | `search_logs` | `LogSearch` |
-| `GetErrors` | `get_errors` | `ErrorExtractor` |
-| `LogStats` | `log_stats` | `StatsCollector` |
-| `TimeRange` | `time_range` | `TimeRangeCalc` |
-| `CorrelateTool` | `correlate` | `Correlator` |
-| `TraceIds` | `trace_ids` | `Correlator` |
-| `AllErrors` | `all_errors` | `ErrorExtractor` + `FileAccess` |
+| `ListLogs` | `list_logs` | `UseCases.ListLogs` |
+| `TailLog` | `tail_log` | `UseCases.TailLog` |
+| `SearchLogs` | `search_logs` | `UseCases.SearchLogs` |
+| `GetErrors` | `get_errors` | `UseCases.GetErrors` |
+| `LogStats` | `log_stats` | `UseCases.CollectStats` |
+| `TimeRange` | `time_range` | `UseCases.TimeRange` |
+| `CorrelateTool` | `correlate` | `UseCases.Correlate` |
+| `TraceIds` | `trace_ids` | `UseCases.TraceIds` |
+| `AllErrors` | `all_errors` | `UseCases.AllErrors` |
+| `SyncLogs` | `sync_logs` | `UseCases.SyncLogs` |
 
-**Registry** derives its tool list and lookup map at compile time from a module attribute list. It builds the `tools/list` response by calling each module's `name/0`, `description/0`, and `schema/0` callbacks. A compile-time `@tool_map` provides O(1) lookup by name.
-
-**Dispatcher** is a 10-line module. It looks up the tool module via `Registry.lookup/1` and calls `mod.execute(args, log_dir)`. No case statement, no conditional logic.
-
-**Helpers** provides shared argument-parsing utilities (`to_pos_int/2`, `maybe_add_time_opts/2`, `parse_time_opt/1`) so that tool modules stay focused on orchestration rather than input coercion.
+**Registry** derives its tool list and lookup map at compile time.
+**Dispatcher** looks up the tool module and calls `mod.execute(args, log_dir)`.
 
 #### Adding a new tool
 
-1. Create a new module under `lib/mcp_log_server/tools/` that implements the `Tool` behaviour (define `name/0`, `description/0`, `schema/0`, `execute/2`).
-2. Add the module to the `@tools` list in `Registry`.
+1. Add a use-case module under `lib/mcp_log_server/use_cases/` that
+   orchestrates domain functions over the ports.
+2. Create a thin tool module under `lib/mcp_log_server/tools/` implementing
+   the `Tool` behaviour.
+3. Add the module to the `@tools` list in `Registry`.
 
-That is all. No dispatcher changes, no server changes, no case branches to update.
+### Application Layer (use-cases)
+
+**Modules**: one per tool capability under `lib/mcp_log_server/use_cases/`.
+
+A use-case resolves a log name through the `LogSource` port, obtains line or
+entry streams from the adapter, and hands them to pure domain functions.
+`UseCases.Deps` resolves the port implementation from application config, so
+tests inject fakes by passing `:source`, `:config`, or `:sync` in `opts` —
+no mocking library needed.
+
+`UseCases.LogReader` is a delegation facade that preserves the historical
+`LogReader` API for existing callers and tests; new code calls the focused
+use-cases directly.
+
+### Ports
+
+**Modules**: `McpLogServer.Ports.LogSource`, `McpLogServer.Ports.Config`, `McpLogServer.Ports.LogSync`
+
+Behaviours that define what the application layer needs from the outside
+world, deliberately shaped for the roadmap (issues #6/#7):
+
+- **LogSource** — enumerate logs and stream their lines behind an opaque
+  handle. Descriptors carry `name`, `path`, `size_bytes`, `modified`, and
+  `live?` so future adapters (remote streamed sources, a persistent indexed
+  source, multi-instance rollup) extend the contract without breaking it.
+  `LogSource.stream_entries/3` composes any adapter's line access with the
+  pure JSON parser.
+- **Config** — the single boundary for env-derived settings (LOG_DIR,
+  MAX_LOG_FILE_MB, LOG_RETENTION_DAYS), resolved in one place and passed
+  around as data.
+- **LogSync** — pulling logs from an external store into the local log
+  directory.
+
+### Infrastructure Layer
+
+**Modules**: `FileLogSource`, `EnvConfig`, `FormatCache`, `CloudSync`
+
+- **FileLogSource** — `LogSource` adapter over local files in LOG_DIR:
+  listing, path resolution with traversal protection, the MAX_LOG_FILE_MB
+  read guardrail, lazy line streaming, and retention cleanup. Its handle is
+  an absolute path; local files report `live?: false`.
+- **FormatCache** — samples a file's first lines/chunk, delegates
+  classification to the pure `Domain.FormatDetector`, and caches results per
+  `{path, mtime}` in ETS.
+- **EnvConfig** — `Config` adapter reading the application environment
+  (populated from OS env vars by `config/runtime.exs`) at call time.
+- **CloudSync** — `LogSync` adapter shelling out to gsutil/aws/az.
+
+Port wiring lives in `config/config.exs`; the composition root
+(`McpLogServer.Application`) is the only other place infrastructure modules
+are named.
 
 ### Domain Layer
 
-**Modules**: `FileAccess`, `LogTail`, `LogSearch`, `ErrorExtractor`, `StatsCollector`, `TimeRangeCalc`, `Correlator`, `FormatDispatch`, plus `LogReader` (facade).
+**Modules**: `TimestampParser`, `TimeFilter`, `JsonLogParser`, `FormatDetector`, `ErrorExtractor`, `LogSearch`, `StatsCollector`, `TimeRangeCalc`, `Correlator`
 
-Each domain module has a single, focused responsibility:
+Pure functions only — no file access, no environment reads. Modules that
+process log content operate on enumerables (`{line, index}` tuples or
+`{enriched_json_entry, index}` tuples) supplied by the caller, which keeps
+them trivially testable with plain lists and lazily composable with adapter
+streams:
 
-- **FileAccess** -- File-system operations: listing `.log` files, resolving paths with traversal protection, reading files into indexed lines, reading raw lines. Every domain module that needs file access goes through here.
-- **FormatDispatch** -- Eliminates duplicated format-detection case switches. Takes a path and two callbacks (one for JSON, one for plain text), detects the format, and routes to the right callback. Used by `ErrorExtractor` and `StatsCollector`.
-- **LogTail** -- Returns the last N lines of a log file with optional time filtering.
-- **LogSearch** -- Searches log files by regex with support for JSON field-level search, context lines, and time filtering.
-- **ErrorExtractor** -- Extracts error/warning/fatal entries from both plain-text and JSON log files. Supports severity filtering, exclusion patterns, and time ranges.
-- **StatsCollector** -- Computes per-file statistics (line count, error/warn/fatal counts, file size) for both plain-text and JSON formats.
-- **TimeRangeCalc** -- Determines the time span of a log file by sampling the first and last 10 lines.
-- **Correlator** -- Cross-service log correlation. Searches for a value (e.g., trace ID, session ID) across all log files and returns a unified timeline sorted by timestamp. Also provides `extract_trace_ids/3` for discovering unique field values.
-- **LogReader** -- A thin delegation facade that re-exports the public API of the focused domain modules under a single namespace. Exists for backward compatibility; new code should call the focused modules directly.
-
-Domain modules have no knowledge of MCP, JSON-RPC, or transport concerns. They take paths and parameters and return data structures.
+- **TimestampParser** — extracts timestamps from plain-text lines
+  (ISO 8601, syslog, CLF, ...) and parses relative shorthands (`"2h"`).
+- **TimeFilter** — time-range predicate for lines and JSON entries.
+  Lines without parseable timestamps are included (fail-open policy).
+- **JsonLogParser** — parses/enriches JSON log entries (`_severity`,
+  `_message`, `_timestamp`) from strings or line streams.
+- **FormatDetector** — pure classification of sampled content as
+  `:plain` / `:json_lines` / `:json_array`.
+- **ErrorExtractor** — severity/exclusion/time filtering over line or
+  entry streams.
+- **LogSearch** — regex matching with context lines and JSON field search.
+- **StatsCollector** — severity counting over line or entry streams.
+- **TimeRangeCalc** — single-pass head/tail sampling and span computation.
+- **Correlator** — correlation matching, timeline building/sorting, field
+  value extraction and aggregation.
 
 ### Config Layer
 
 **Module**: `McpLogServer.Config.Patterns`
 
-Manages compiled regex patterns for log-level detection across the severity hierarchy: `trace(0) < debug(1) < info(2) < warn(3) < error(4) < fatal(5)`.
+Manages compiled regex patterns for log-level detection across the severity
+hierarchy: `trace(0) < debug(1) < info(2) < warn(3) < error(4) < fatal(5)`.
 
 Configuration flows through three stages:
 
-1. **Environment variables** (`LOG_FATAL_PATTERNS`, `LOG_ERROR_PATTERNS`, `LOG_WARN_PATTERNS`, `LOG_EXTRA_PATTERNS`) are read at startup.
-2. **`config/runtime.exs`** maps those env vars into `Application` environment under the `:mcp_log_server` app.
-3. **`Patterns.init/0`** (called from `Application.start/2`) compiles the pattern strings into regexes and stores them in `:persistent_term` for zero-copy, zero-overhead reads from any process.
+1. **Environment variables** (`LOG_FATAL_PATTERNS`, `LOG_ERROR_PATTERNS`,
+   `LOG_WARN_PATTERNS`, `LOG_EXTRA_PATTERNS`) are read at startup.
+2. **`config/runtime.exs`** maps those env vars into `Application`
+   environment under the `:mcp_log_server` app.
+3. **`Patterns.init/0`** (called from `Application.start/2`) compiles the
+   pattern strings into regexes and stores them in `:persistent_term` for
+   zero-copy reads.
 
-Downstream modules (`ErrorExtractor`, `StatsCollector`, `Correlator`) call `Patterns.detect_level/1` and `Patterns.matches_level?/2` without any runtime cost beyond the regex match itself.
+Domain modules read the compiled patterns as data via `Patterns.detect_level/1`
+and friends; this is the one sanctioned crossing between domain logic and
+configuration, because after `init/0` the patterns are immutable values, not
+environment reads.
 
 ---
 
@@ -138,35 +236,75 @@ Downstream modules (`ErrorExtractor`, `StatsCollector`, `Correlator`) call `Patt
 ```
 McpLogServer.Application (supervisor, one_for_one)
 ├── Patterns.init()          [called eagerly before tree starts]
+├── FileLogSource.cleanup_old_logs()  [startup retention sweep]
 └── McpLogServer.Transport.Stdio (GenServer)
     └── read loop (linked Task)
 ```
 
-The application reads `LOG_DIR` from the environment, ensures the directory exists, initialises compiled patterns, and starts the Stdio transport. The transport starts a blocking read loop in a linked Task.
+The application reads `LOG_DIR` through `EnvConfig`, ensures the directory
+exists, initialises compiled patterns, runs retention cleanup, and starts the
+Stdio transport.
 
 ---
 
 ## Security Model
 
-- **Path traversal protection**: `FileAccess.resolve/2` validates that file arguments are basenames only -- no `/`, `..`, or absolute paths accepted.
-- **Read-only**: No file writes, no command execution.
-- **Isolated I/O**: Logger outputs to stderr; MCP protocol uses stdout. This prevents log messages from being interpreted as JSON-RPC responses.
+- **Path traversal protection**: `FileLogSource.resolve/2` validates that
+  file arguments are basenames only — no `/`, `..`, or absolute paths.
+- **Read-size guardrail**: `FileLogSource.resolve_readable/2` enforces
+  `MAX_LOG_FILE_MB` for content-loading tools; streaming stats are exempt.
+- **Read-only**: No file writes (except `sync_logs`, which only writes into
+  LOG_DIR), no arbitrary command execution.
+- **Isolated I/O**: Logger outputs to stderr; MCP protocol uses stdout.
 
 ---
 
 ## Design Decisions
 
-**Why Elixir?** OTP's supervision tree handles crashes gracefully. If a tool call fails, the server stays alive. The BEAM VM is also excellent for concurrent I/O -- relevant when streaming large log files.
+**Why explicit ports?** The roadmap (issues #6 and #7) adds remote streamed
+sources, multi-instance rollup, cursors, and a persistent index. Each of
+those is an adapter or use-case behind the seams defined here: a remote
+source implements `LogSource`, an index-backed source implements `LogSource`,
+new tool capabilities become use-cases. If the boundaries were implicit,
+every one of those slices would need invasive edits; with ports, they plug in.
 
-**Why stdio over HTTP?** MCP's primary transport is stdio. It is simpler, requires no port management, and works naturally with Docker containers.
+**Why enumerable-based domain functions?** Passing streams instead of paths
+makes the domain pure without sacrificing constant-memory processing: the
+adapter's lazy `File.stream!` composes directly with domain `Stream`
+pipelines. Tests feed plain lists; production feeds file streams; a future
+remote adapter feeds socket-backed streams — same domain code.
 
-**Why TOON instead of just JSON?** LLM context windows are expensive. For a development workflow with dozens of log queries per session, 50% token savings compounds meaningfully.
+**Why resolve adapters via config instead of default arguments?** A default
+argument naming `FileLogSource` inside a use-case would make the application
+layer depend on infrastructure. `UseCases.Deps` reads the wiring from
+application config (set in `config/config.exs`), keeping the dependency rule
+intact while letting tests override per call via `opts`.
 
-**Why a Tool behaviour?** Before the refactoring, the Dispatcher contained a growing case statement that mixed argument parsing, domain calls, and response formatting for every tool. The behaviour pattern inverts this: each tool module is self-contained, and the Dispatcher is reduced to a two-line lookup-and-call. Adding a tool requires zero changes to existing code (Open/Closed Principle). The Registry derives its definitions at compile time from the module list, so there is no duplication between schema declaration and dispatch routing.
+**Why Elixir?** OTP's supervision tree handles crashes gracefully. If a tool
+call fails, the server stays alive. The BEAM VM is also excellent for
+concurrent I/O — relevant when streaming large log files.
 
-**Why persistent_term for Patterns?** Log-level patterns are read on every line of every file during error extraction and stats collection. `Application.get_env` copies the value on each call. `:persistent_term` provides a direct reference with no copying and no ETS lookup, making the hot path as fast as a module attribute while remaining runtime-configurable.
+**Why stdio over HTTP?** MCP's primary transport is stdio. It is simpler,
+requires no port management, and works naturally with Docker containers.
 
-**Why a delegation facade (LogReader)?** The original monolithic `LogReader` module was the public API for the domain layer. After decomposition into focused modules, `LogReader` was retained as a thin delegation facade so that any external consumers (or tests) referencing the old API continue to work. New tool modules call the focused domain modules directly.
+**Why TOON instead of just JSON?** LLM context windows are expensive. For a
+development workflow with dozens of log queries per session, 50% token
+savings compounds meaningfully.
+
+**Why a Tool behaviour?** Each tool module is self-contained and the
+Dispatcher is a two-line lookup-and-call. Adding a tool requires zero changes
+to existing code (Open/Closed Principle).
+
+**Why persistent_term for Patterns?** Log-level patterns are read on every
+line of every file during error extraction and stats collection.
+`:persistent_term` provides a direct reference with no copying and no ETS
+lookup, making the hot path as fast as a module attribute while remaining
+runtime-configurable.
+
+**Why keep a LogReader facade?** The historical `LogReader` module was the
+public API of the old domain layer. `UseCases.LogReader` preserves that
+surface for existing callers and tests while the focused use-cases are the
+API for new code.
 
 ---
 
