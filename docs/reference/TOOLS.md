@@ -60,6 +60,61 @@ LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; app*.log=epoch_ms; dev-*.log=%H:%M:%S'
 
 ---
 
+## Omissions: Never Truncate Silently
+
+A truncated result that looks complete is worse than an error: the investigator concludes "line absent" when the truth was "line beyond the buffer". Every tool that bounds its output — match caps, line caps, value caps, the `MAX_LOG_FILE_MB` oversized-file skip — reports any bound it actually hit in ONE uniform place: the **`omissions`** block.
+
+```
+omissions: {
+  "matches": {"omitted": 240, "showing": "newest 100"},   // count known
+  "matches": {"capped_at": 500},                            // count unknown (lazy scan stopped early)
+  "lines":   {"omitted": 240, "showing": "newest 100"},    // tail_log
+  "values":  {"omitted": 12, "showing": "top 50 by count"}, // trace_ids
+  "skipped_files": [{"file": "app.log", "reason": "File too large (142.0 MB). Max is 100 MB. ..."}]
+}
+```
+
+- In TOON output the block rides in the `# {...}` metadata line (or a trailing `# omissions: {...}` line for `all_errors` / `tail_log`); in JSON output it is a top-level key.
+- **One field to check:** if a result has no `omissions`, you saw everything the tool scanned. If it does, the block names exactly what was withheld and why.
+- **Zero noise:** the block is entirely absent when nothing was bounded — never `omitted: 0` — so complete results are unchanged.
+- The oversized-file skip appears in the results of every multi-file scan that would have included the file (`all_errors`, rollup-mode `search_logs`). Single-file tools refuse oversized files with an explicit error instead.
+
+Bounds reported per tool: `search_logs` (`max_results`), `get_errors` (`lines`), `tail_log` (`lines`), `all_errors` (per-file `lines` + skipped files), `correlate` (`max_results`), `trace_ids` (`max_values`).
+
+---
+
+## Rollup Mode: "Did X Happen, On How Many Instances, When?"
+
+With N instances emitting near-identical lines, a grep answers the wrong question. A message emitted by 1 of 9 machines is easy to miss entirely in flooded output; `ran on 1/9, first 17:59:21` answers the incident question in one call.
+
+`search_logs` and `all_errors` accept **`rollup: true`** (default `false` — existing behavior untouched). Matching lines are collapsed into **message templates**: volatile tokens are replaced with placeholders so near-identical lines land on the same row.
+
+| Placeholder | Replaces |
+|-------------|----------|
+| `<TS>` | Timestamps (ISO 8601, CLF, syslog, `HH:MM:SS`) |
+| `<UUID>` | UUIDs |
+| `<IP>` | IPv4 addresses, with or without `:port` |
+| `<HEX>` | `0x...` literals and 8+ char hex ids containing a digit |
+| `<N>` | Standalone numbers (including `34ms` → `<N>ms`) |
+
+Each rolled-up row carries:
+
+- `template` — the normalized message
+- `count` — how many lines collapsed into it
+- `instances_seen` — distinct instances that emitted it, as `1/3` where the denominator is the number of sources scanned. The instance is the line's `[src:<name>]` tag ([streamed sources](#streamed-sources-log_sources)) when present, else the file name; rotated files (`fly.1.log`) collapse into their logical source.
+- `first_ts` / `last_ts` — earliest/latest parsed timestamp of the collapsed lines
+- `sample` — one raw line, verbatim
+
+```
+# {"pattern":"out of memory","rollup":true,"sources_scanned":3}
+[count|first_ts|instances_seen|last_ts|sample|template]
+2|2026-07-17T17:59:21Z|1/3|2026-07-17T18:03:33Z|[src:web-2] 2026-07-17T17:59:21Z ERROR out of memory: killed worker 4411|<TS> ERROR out of memory: killed worker <N>
+```
+
+In rollup mode `search_logs` may omit `file` to scan ALL logs. `since`/`until` apply as usual (fail-open, with `unparsed_ts` reported), and files skipped by the size guardrail appear in `omissions.skipped_files`.
+
+---
+
 ## Streamed Sources: `LOG_SOURCES`
 
 The server is not limited to `.log` files that already exist under `LOG_DIR`. Declare streaming commands -- Fly, Kubernetes, journald, Docker, anything that writes logs to stdout -- and the server tees each stream into a rotating file that every tool can search, tail, and correlate with zero special-casing:
@@ -247,6 +302,8 @@ Get the last N lines from a log file, optionally filtered to a time window.
 
 When `since` is active, the `# unparsed_ts: N` header line counts scanned lines whose timestamp could not be parsed -- those lines pass the filter (fail-open). Without `since` the line is omitted.
 
+When the file holds more (post-filter) lines than requested, a `# omissions: {"lines":{"omitted":240,"showing":"newest 100"}}` header line reports the withheld older lines -- absent when everything fit. See [Omissions](#omissions-never-truncate-silently).
+
 **When to use:** See the most recent log output from a specific file, optionally narrowed to a recent time window.
 
 ---
@@ -259,11 +316,12 @@ Search a log file using a regex pattern. Returns matching lines with line number
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `file` | string | Yes | -- | Log file name |
+| `file` | string | Yes* | -- | Log file name. *Optional when `rollup` is true (then ALL log files are scanned) |
 | `pattern` | string | Yes | -- | Regex pattern (case-insensitive) |
-| `max_results` | integer | No | 50 | Maximum number of matches |
+| `max_results` | integer | No | 50 | Maximum number of matches (not used in rollup mode) |
 | `context` | integer | No | 0 | Lines to show before and after each match |
 | `field` | string | No | -- | JSON field to search in (dot-notation, e.g. `jsonPayload.message`). Only used for JSON log files |
+| `rollup` | boolean | No | false | Collapse matches into [message templates](#rollup-mode-did-x-happen-on-how-many-instances-when) with `count`, `instances_seen`, `first_ts`/`last_ts` |
 | `since` | string | No | -- | Only include lines from this time onward. ISO 8601 or relative shorthand (e.g. `30m`, `2h`) |
 | `until` | string | No | -- | Only include lines up to this time. ISO 8601 or relative shorthand |
 | `format` | string | No | toon | Output format: `toon` or `json` |
@@ -291,6 +349,26 @@ ERROR: Request timeout after 30s|287
 ```
 
 With `since`/`until` active, `unparsed_ts` counts scanned lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The field is omitted when no time filter is applied.
+
+When the `max_results` cap was actually hit, the metadata carries an [`omissions`](#omissions-never-truncate-silently) block, e.g. `"omissions":{"matches":{"omitted":240,"showing":"first 50"}}` -- absent when every match was returned.
+
+**Example request with rollup (the multi-instance incident question):**
+```json
+{
+  "name": "search_logs",
+  "arguments": {
+    "pattern": "out of memory",
+    "rollup": true
+  }
+}
+```
+
+**Example rollup response:**
+```
+# {"pattern":"out of memory","rollup":true,"sources_scanned":3}
+[count|first_ts|instances_seen|last_ts|sample|template]
+2|2026-07-17T17:59:21Z|1/3|2026-07-17T18:03:33Z|[src:web-2] 2026-07-17T17:59:21Z ERROR out of memory: killed worker 4411|<TS> ERROR out of memory: killed worker <N>
+```
 
 **Example request with field scoping (JSON logs):**
 ```json
@@ -357,6 +435,8 @@ Extract lines matching common error patterns from a single log file. Recognizes 
 
 With `since`/`until` active, `unparsed_ts` counts scanned lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The field is omitted when no time filter is applied.
 
+When the `lines` cap was hit, the metadata carries `"omissions":{"matches":{"omitted":N,"showing":"newest 100"}}` -- absent when every matching entry was returned. See [Omissions](#omissions-never-truncate-silently).
+
 **When to use:** Get a focused view of problems in a specific log file. Use `level` to filter noise and `exclude` to suppress known false positives.
 
 ---
@@ -369,9 +449,10 @@ Aggregate errors across ALL log files at once. Always returns TOON format. Accep
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `lines` | integer | No | 20 | Maximum errors per file |
+| `lines` | integer | No | 20 | Maximum errors per file (not used in rollup mode) |
 | `level` | string | No | warn | Minimum severity level: `fatal`, `error`, `warn`, or `info` |
 | `exclude` | string | No | -- | Regex pattern -- lines matching this are excluded from results |
+| `rollup` | boolean | No | false | Collapse errors into [message templates](#rollup-mode-did-x-happen-on-how-many-instances-when) with `count`, `instances_seen`, `first_ts`/`last_ts` |
 | `since` | string | No | -- | Only include errors from this time onward. ISO 8601 or relative shorthand (e.g. `1h`) |
 
 **Example request:**
@@ -401,6 +482,14 @@ Aggregate errors across ALL log files at once. Always returns TOON format. Accep
 ```
 
 With `since` active, the trailing `# unparsed_ts: N` line is the total (across all scanned files) of lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The line is omitted when no time filter is applied.
+
+When any bound was hit, a trailing `# omissions: {...}` line reports it -- files skipped by the `MAX_LOG_FILE_MB` guardrail appear as `skipped_files` (each with its reason), and entries dropped by the per-file cap as `matches`. See [Omissions](#omissions-never-truncate-silently). The line is absent when the scan was complete:
+
+```
+# omissions: {"skipped_files":[{"file":"huge.log","reason":"File too large (142.0 MB). Max is 100 MB. Set MAX_LOG_FILE_MB to increase."}],"matches":{"omitted":37,"showing":"newest 20 per file"}}
+```
+
+With `rollup: true`, the per-file listing is replaced by message-template rows (same shape as `search_logs` rollup), severity-filtered by `level`.
 
 **When to use:** Best first call for a health overview. Scans every log file and returns a summary of errors across the entire system.
 
@@ -446,6 +535,8 @@ Search for a correlation ID (session ID, trace ID, request ID) across ALL log fi
 
 `unparsed_ts` counts matched entries whose timestamp could not be parsed; they are still included (fail-open) but sort last in the timeline.
 
+When the `max_results` cap was hit, the metadata carries `"omissions":{"matches":{"omitted":N,"showing":"first 200 by time"}}` -- absent when the timeline is complete. See [Omissions](#omissions-never-truncate-silently).
+
 **When to use:** Trace a single request, session, or transaction across multiple services to understand the full lifecycle and pinpoint where failures occur.
 
 ---
@@ -481,6 +572,8 @@ Discover unique values for a correlation field (e.g. `sessionId`, `traceId`) acr
 18|2026-03-20T10:01:00Z|2026-03-20T10:02:30Z|req-ghi-789
 5|2026-03-20T10:04:00Z|2026-03-20T10:04:02Z|req-jkl-012
 ```
+
+When the `max_values` cap was hit, a `# {...}` metadata line carries `"omissions":{"values":{"omitted":N,"showing":"top 50 by count"}}` -- absent when the value list is exhaustive. See [Omissions](#omissions-never-truncate-silently).
 
 **When to use:** Find active trace or session IDs before using `correlate` to drill into a specific one. Useful for identifying the busiest or most recent transactions.
 
