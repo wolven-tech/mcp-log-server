@@ -5,7 +5,7 @@ status: active
 audience: [developers]
 difficulty: intermediate
 created: 2026-03-18
-lastModified: 2026-03-20
+lastModified: 2026-07-17
 tags: [reference, api, tools]
 ---
 
@@ -24,6 +24,39 @@ A typical investigation follows this sequence:
 3. **`get_errors`** with `level`/`since` -- Targeted investigation of a single file, filtering by severity and time window.
 4. **`search_logs`** with `field`/`context` -- Deep dive into specific patterns, optionally scoped to a JSON field.
 5. **`correlate`** -- Cross-service tracing using a request ID, session ID, or trace ID to build a unified timeline.
+
+---
+
+## Timestamp Parsing, `since`/`until`, and the Fail-Open Policy
+
+`since`/`until` filters work by extracting a timestamp from each line. Auto-detected formats:
+
+- ISO 8601 / RFC 3339: `2026-03-20T14:00:00.123Z` (also bracketed: `[2026-03-20T14:00:00Z]`)
+- Common Log Format: `20/Mar/2026:14:00:00 +0000`
+- Date space time: `2026-03-20 14:00:00`
+- Syslog: `Mar 20 14:00:00`
+- Dev-server time-only formats: `14:00:00` line prefix, `[14:00:00]`, `[vite] 14:00:00` (optional `AM`/`PM`; ANSI color codes are stripped first, so colorized Vite/webpack output works)
+
+Time-only stamps carry no date. The date is resolved from the file's mtime: the time-of-day is placed on the mtime's date, and if that instant would be *later* than the mtime it is shifted back one day. A log line cannot postdate its file's last modification, so this keeps ordering monotonic across midnight for any file spanning under 24 hours.
+
+**Fail-open policy:** a line whose timestamp cannot be parsed is NEVER excluded by `since`/`until` -- it always passes the filter. Silently hiding lines during an incident would be strictly worse than including too many. The degradation is made observable instead:
+
+- Every time-filtered result (`tail_log`, `search_logs`, `get_errors`, `all_errors`) includes **`unparsed_ts`** -- the count of scanned lines whose timestamp could not be parsed while the filter was active. `unparsed_ts: 0` means the filter worked exactly; a large value means the filter was largely a no-op. No time filter, no parsing cost -- the field is omitted.
+- `correlate` reports `unparsed_ts` as the number of matched timeline entries that could not be time-ordered (they sort last).
+- `log_stats` and `time_range` report **`ts_parse_ratio`** / **`ts_parse_sample`** -- the sampled share of lines with parseable timestamps (`log_stats` samples the first 1000 lines; `time_range` samples the first and last 10). A ratio of `0.0` is the loud version of the formerly silent failure: `since`/`until` on that file filters nothing.
+
+### `LOG_TS_FORMATS`: declaring formats per source
+
+When auto-detection cannot read a file's stamps (or guesses wrong), declare the format explicitly:
+
+```bash
+LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; app*.log=epoch_ms; dev-*.log=%H:%M:%S'
+```
+
+- Entries are `glob=format`, separated by `;`. Globs match the log file's basename (`*` and `?` supported); the first matching glob wins.
+- Declared formats are tried FIRST for matching files, before auto-detection (which remains the fallback).
+- Supported formats: `rfc3339`, `epoch_ms` (13-digit Unix milliseconds), `epoch_s` (10-digit Unix seconds), or a strftime subset: `%Y %m %d %H %M %S %b %f %.f %z %:z %F %T %%`.
+- The declaration is parsed and validated ONCE at server startup. An invalid declaration (unknown directive, malformed entry) aborts boot with a descriptive error -- a typo can never degrade into silent 0% parsing at query time.
 
 ---
 
@@ -83,9 +116,13 @@ Get file statistics without reading the full content. Auto-detects JSON format a
   "lines": 14523,
   "errors": 12,
   "warnings": 47,
-  "modified": "2026-03-20T10:05:00Z"
+  "modified": "2026-03-20T10:05:00Z",
+  "ts_parse_ratio": 0.998,
+  "ts_parse_sample": 1000
 }
 ```
+
+`ts_parse_ratio` is the share of sampled lines (first `ts_parse_sample` lines, up to 1000) whose timestamp parsed. `0.0` means `since`/`until` filters on this file are effectively disabled (fail-open) -- declare the format via `LOG_TS_FORMATS` to fix it.
 
 **When to use:** Quick overview of file health -- check error/warning counts before deciding whether to dig deeper.
 
@@ -117,9 +154,13 @@ Get the earliest and latest timestamps in a log file, plus the time span. Works 
   "file": "api.log",
   "earliest": "2026-03-20T00:00:03Z",
   "latest": "2026-03-20T10:05:00Z",
-  "span": "10h 4m 57s"
+  "span": "10h 4m 57s",
+  "ts_parse_ratio": 1.0,
+  "ts_parse_sample": 20
 }
 ```
+
+`ts_parse_ratio` / `ts_parse_sample` report timestamp parseability over the sampled first and last lines -- a low ratio warns that `since`/`until` filtering on this file is unreliable (see the fail-open policy above).
 
 **When to use:** Determine what time period a log file covers before using `since`/`until` filters on other tools.
 
@@ -154,11 +195,14 @@ Get the last N lines from a log file, optionally filtered to a time window.
 
 **Example response:**
 ```
-# tail api.log (last 20 lines, since 15m ago)
+# tail api.log (last 20 lines)
+# unparsed_ts: 0
 2026-03-20T10:02:11Z INFO  [Router] GET /api/users 200 12ms
 2026-03-20T10:02:14Z WARN  [Pool] Connection pool at 80% capacity
 2026-03-20T10:03:01Z ERROR [DB] Query timeout after 30s on users_table
 ```
+
+When `since` is active, the `# unparsed_ts: N` header line counts scanned lines whose timestamp could not be parsed -- those lines pass the filter (fail-open). Without `since` the line is omitted.
 
 **When to use:** See the most recent log output from a specific file, optionally narrowed to a recent time window.
 
@@ -197,11 +241,13 @@ Search a log file using a regex pattern. Returns matching lines with line number
 
 **Example response (TOON):**
 ```
-# {"total":2}
+# {"file":"api.log","pattern":"ECONNREFUSED|timeout","returned_matches":2,"unparsed_ts":0}
 [content|line_number]
 ERROR: ECONNREFUSED to redis:6379|142
 ERROR: Request timeout after 30s|287
 ```
+
+With `since`/`until` active, `unparsed_ts` counts scanned lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The field is omitted when no time filter is applied.
 
 **Example request with field scoping (JSON logs):**
 ```json
@@ -259,12 +305,14 @@ Extract lines matching common error patterns from a single log file. Recognizes 
 
 **Example response (TOON):**
 ```
-# {"file":"api.log","error_count":3}
+# {"file":"api.log","error_count":3,"unparsed_ts":0}
 [line_number|content]
 1247|ERROR [ExceptionFilter] TypeError: Cannot read properties of undefined
 1251|ERROR [ExceptionFilter] ECONNREFUSED 127.0.0.1:6379
 1398|FATAL [Process] Out of memory: heap allocation failed
 ```
+
+With `since`/`until` active, `unparsed_ts` counts scanned lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The field is omitted when no time filter is applied.
 
 **When to use:** Get a focused view of problems in a specific log file. Use `level` to filter noise and `exclude` to suppress known false positives.
 
@@ -305,7 +353,11 @@ Aggregate errors across ALL log files at once. Always returns TOON format. Accep
 === worker.log (1 error) ===
 [line_number|content]
 89|ERROR: Job queue stalled — no heartbeat for 60s
+
+# unparsed_ts: 0
 ```
+
+With `since` active, the trailing `# unparsed_ts: N` line is the total (across all scanned files) of lines whose timestamp could not be parsed -- those lines pass the time filter (fail-open). The line is omitted when no time filter is applied.
 
 **When to use:** Best first call for a health overview. Scans every log file and returns a summary of errors across the entire system.
 
@@ -340,7 +392,7 @@ Search for a correlation ID (session ID, trace ID, request ID) across ALL log fi
 
 **Example response (cross-service timeline):**
 ```
-# Correlation: req-abc-123 (5 entries across 3 files)
+# {"value":"req-abc-123","total_matches":5,"files_matched":["gateway.log","api.log","worker.log"],"unparsed_ts":0}
 [timestamp|file|content]
 2026-03-20T10:00:01.100Z|gateway.log|INFO  Incoming POST /api/orders traceId=req-abc-123
 2026-03-20T10:00:01.150Z|api.log|INFO  [OrderController] Creating order traceId=req-abc-123
@@ -348,6 +400,8 @@ Search for a correlation ID (session ID, trace ID, request ID) across ALL log fi
 2026-03-20T10:00:01.800Z|worker.log|INFO  [PaymentJob] Charging card traceId=req-abc-123
 2026-03-20T10:00:02.400Z|gateway.log|INFO  Response 201 /api/orders 1300ms traceId=req-abc-123
 ```
+
+`unparsed_ts` counts matched entries whose timestamp could not be parsed; they are still included (fail-open) but sort last in the timeline.
 
 **When to use:** Trace a single request, session, or transaction across multiple services to understand the full lifecycle and pinpoint where failures occur.
 
