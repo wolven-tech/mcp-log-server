@@ -21,13 +21,19 @@ defmodule McpLogServer.UseCases.GetErrors do
     * `:source` - `LogSource` implementation (defaults to configured adapter)
     * `:ts_format` - compiled declared timestamp format override (tests)
 
-  Returns `{:ok, %{entries: entries, unparsed_ts: n | nil}}` — `unparsed_ts`
-  counts scanned lines whose timestamp could not be parsed while a time
-  filter was active (fail-open: they pass the filter); `nil` when no time
-  filter was applied.
+  Returns `{:ok, %{entries: entries, unparsed_ts: n | nil, omissions: om}}` —
+  `unparsed_ts` counts scanned lines whose timestamp could not be parsed
+  while a time filter was active (fail-open: they pass the filter); `nil`
+  when no time filter was applied. `omissions` reports how many matching
+  entries the `max_lines` cap withheld (empty map when none were).
   """
   @spec run(String.t(), String.t(), pos_integer(), keyword()) ::
-          {:ok, %{entries: [map()], unparsed_ts: non_neg_integer() | nil}}
+          {:ok,
+           %{
+             entries: [map()],
+             unparsed_ts: non_neg_integer() | nil,
+             omissions: McpLogServer.Domain.Omissions.t()
+           }}
           | {:error, String.t()}
   def run(log_dir, file, max_lines, opts \\ []) do
     source = Deps.log_source(opts)

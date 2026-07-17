@@ -12,7 +12,11 @@ defmodule McpLogServer.Tools.TraceIds do
 
   @impl true
   def description,
-    do: "Discover unique values for a correlation field (e.g. sessionId, traceId) across log files. Returns values with count and time range."
+    do:
+      "Discover unique values for a correlation field (e.g. sessionId, traceId) across log files. " <>
+        "Returns values with count and time range. If the max_values cap was hit, the result " <>
+        "carries an omissions block saying how many values were withheld — absent when the list " <>
+        "is exhaustive."
 
   @impl true
   def schema do

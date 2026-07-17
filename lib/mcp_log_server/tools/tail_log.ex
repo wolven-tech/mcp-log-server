@@ -15,7 +15,9 @@ defmodule McpLogServer.Tools.TailLog do
     do:
       "Get the last N lines from a log file. Use this to see recent output. " <>
         "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since; " <>
-        "the unparsed_ts count in the result reveals when filtering was degraded this way."
+        "the unparsed_ts count in the result reveals when filtering was degraded this way. " <>
+        "If older lines exist beyond the cap, the result carries an omissions block saying how " <>
+        "many were withheld — absent when the whole file fit."
 
   @impl true
   def schema do
@@ -39,9 +41,10 @@ defmodule McpLogServer.Tools.TailLog do
     opts = maybe_add_time_opts([], args)
 
     case UseCases.TailLog.run(log_dir, file, lines, opts) do
-      {:ok, %{content: content, unparsed_ts: unparsed_ts}} ->
+      {:ok, %{content: content, unparsed_ts: unparsed_ts, omissions: omissions}} ->
         data = %{file: file, lines: lines, content: content}
         data = if unparsed_ts != nil, do: Map.put(data, :unparsed_ts, unparsed_ts), else: data
+        data = McpLogServer.Domain.Omissions.attach(data, omissions)
         {:ok, ResponseFormatter.format(:tail, data, format)}
 
       {:error, reason} ->

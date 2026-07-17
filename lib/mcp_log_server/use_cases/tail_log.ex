@@ -6,8 +6,14 @@ defmodule McpLogServer.UseCases.TailLog do
   pass the filter (fail-open) and are counted in the returned
   `:unparsed_ts` so the degraded filtering is observable. Without a time
   filter no timestamp parsing happens at all and `:unparsed_ts` is `nil`.
+
+  When the file (after filtering) holds more lines than `n`, the returned
+  `:omissions` block says how many older lines were withheld — a tail that
+  looks complete but is not would be the `flyctl`-style silent cap this
+  server refuses to reproduce. The block is empty when everything fit.
   """
 
+  alias McpLogServer.Domain.Omissions
   alias McpLogServer.Domain.TimeFilter
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.UseCases.Deps
@@ -22,10 +28,16 @@ defmodule McpLogServer.UseCases.TailLog do
     * `:source` - `LogSource` implementation (defaults to configured adapter)
     * `:ts_format` - compiled declared timestamp format override (tests)
 
-  Returns `{:ok, %{content: String.t(), unparsed_ts: non_neg_integer() | nil}}`.
+  Returns `{:ok, %{content: String.t(), unparsed_ts: non_neg_integer() | nil,
+  omissions: Omissions.t()}}`.
   """
   @spec run(String.t(), String.t(), pos_integer(), keyword()) ::
-          {:ok, %{content: String.t(), unparsed_ts: non_neg_integer() | nil}}
+          {:ok,
+           %{
+             content: String.t(),
+             unparsed_ts: non_neg_integer() | nil,
+             omissions: Omissions.t()
+           }}
           | {:error, String.t()}
   def run(log_dir, file, n, opts \\ []) do
     source = Deps.log_source(opts)
@@ -33,8 +45,15 @@ defmodule McpLogServer.UseCases.TailLog do
 
     with {:ok, handle} <- source.resolve_readable(log_dir, file) do
       {lines, unparsed} = collect(source, handle, file, since, opts)
+      total = length(lines)
       content = lines |> Enum.take(-n) |> Enum.join("\n")
-      {:ok, %{content: content, unparsed_ts: unparsed}}
+
+      {:ok,
+       %{
+         content: content,
+         unparsed_ts: unparsed,
+         omissions: Omissions.cap(Omissions.new(), :lines, total, n, "newest #{n}")
+       }}
     end
   end
 

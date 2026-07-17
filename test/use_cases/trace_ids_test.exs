@@ -29,7 +29,7 @@ defmodule McpLogServer.UseCases.TraceIdsTest do
 
   describe "extract_trace_ids/3" do
     test "returns unique values with counts sorted by count desc" do
-      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId")
+      {:ok, %{entries: results}} = TraceIds.run(@tmp_dir, "sessionId")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values
@@ -48,20 +48,28 @@ defmodule McpLogServer.UseCases.TraceIdsTest do
     end
 
     test "includes first_seen and last_seen timestamps" do
-      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId")
+      {:ok, %{entries: results}} = TraceIds.run(@tmp_dir, "sessionId")
 
       abc = Enum.find(results, &(&1.value == "abc-123"))
       assert abc.first_seen != nil
       assert abc.last_seen != nil
     end
 
-    test "max_values caps results" do
-      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", max_values: 1)
+    test "max_values caps results and reports the omission" do
+      {:ok, %{entries: results, omissions: omissions}} =
+        TraceIds.run(@tmp_dir, "sessionId", max_values: 1)
+
       assert length(results) == 1
+      assert %{values: %{omitted: 2, showing: "top 1 by count"}} = omissions
+    end
+
+    test "no omissions block when the value list is exhaustive" do
+      {:ok, result} = TraceIds.run(@tmp_dir, "sessionId")
+      refute Map.has_key?(result, :omissions)
     end
 
     test "file option scans only one file" do
-      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", file: "gateway.log")
+      {:ok, %{entries: results}} = TraceIds.run(@tmp_dir, "sessionId", file: "gateway.log")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values
@@ -73,7 +81,7 @@ defmodule McpLogServer.UseCases.TraceIdsTest do
     end
 
     test "extracts from plain text key=value patterns" do
-      {:ok, results} = TraceIds.run(@tmp_dir, "sessionId", file: "api.log")
+      {:ok, %{entries: results}} = TraceIds.run(@tmp_dir, "sessionId", file: "api.log")
 
       values = Enum.map(results, & &1.value)
       assert "abc-123" in values

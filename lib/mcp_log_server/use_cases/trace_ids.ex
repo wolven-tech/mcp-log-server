@@ -5,11 +5,16 @@ defmodule McpLogServer.UseCases.TraceIds do
   """
 
   alias McpLogServer.Domain.Correlator
+  alias McpLogServer.Domain.Omissions
   alias McpLogServer.Ports.LogSource
   alias McpLogServer.UseCases.Deps
 
   @doc """
   Extract unique values for `field` across all logs in `log_dir`.
+
+  Returns `{:ok, %{entries: rows}}`; when the `max_values` cap withheld
+  values, the result also carries an `omissions` block saying how many —
+  a capped list must never look exhaustive.
 
   ## Options
 
@@ -17,7 +22,8 @@ defmodule McpLogServer.UseCases.TraceIds do
     * `:max_values` - max unique values to return (default: 50)
     * `:source` - `LogSource` implementation (defaults to configured adapter)
   """
-  @spec run(String.t(), String.t(), keyword()) :: {:ok, [map()]}
+  @spec run(String.t(), String.t(), keyword()) ::
+          {:ok, %{required(:entries) => [map()], optional(:omissions) => Omissions.t()}}
   def run(log_dir, field, opts \\ []) do
     source = Deps.log_source(opts)
     max_values = Keyword.get(opts, :max_values, 50)
@@ -40,7 +46,19 @@ defmodule McpLogServer.UseCases.TraceIds do
         end
       end)
 
-    {:ok, Correlator.aggregate_field_values(pairs, max_values)}
+    all_values = Correlator.aggregate_field_values(pairs)
+    rows = Enum.take(all_values, max_values)
+
+    omissions =
+      Omissions.cap(
+        Omissions.new(),
+        :values,
+        length(all_values),
+        max_values,
+        "top #{max_values} by count"
+      )
+
+    {:ok, Omissions.attach(%{entries: rows}, omissions)}
   end
 
   defp field_values(source, handle, field) do

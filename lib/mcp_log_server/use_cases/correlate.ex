@@ -5,6 +5,7 @@ defmodule McpLogServer.UseCases.Correlate do
   """
 
   alias McpLogServer.Domain.Correlator
+  alias McpLogServer.Domain.Omissions
   alias McpLogServer.Ports.LogSource
   alias McpLogServer.UseCases.Deps
   alias McpLogServer.UseCases.TsOpts
@@ -37,10 +38,9 @@ defmodule McpLogServer.UseCases.Correlate do
         end
       end)
 
-    capped =
-      all_entries
-      |> Correlator.sort_timeline()
-      |> Enum.take(max_results)
+    sorted = Correlator.sort_timeline(all_entries)
+    total = length(sorted)
+    capped = Enum.take(sorted, max_results)
 
     files_matched =
       capped
@@ -52,15 +52,23 @@ defmodule McpLogServer.UseCases.Correlate do
     # failing silently.
     unparsed_ts = Enum.count(capped, &is_nil(&1.timestamp))
 
+    # A capped timeline must say so: without the marker, "the trail ends
+    # here" and "the buffer ended here" are indistinguishable.
+    omissions =
+      Omissions.cap(Omissions.new(), :matches, total, max_results, "first #{max_results} by time")
+
     {:ok,
-     %{
-       value: value,
-       field: field,
-       total_matches: length(capped),
-       files_matched: files_matched,
-       timeline: capped,
-       unparsed_ts: unparsed_ts
-     }}
+     Omissions.attach(
+       %{
+         value: value,
+         field: field,
+         total_matches: length(capped),
+         files_matched: files_matched,
+         timeline: capped,
+         unparsed_ts: unparsed_ts
+       },
+       omissions
+     )}
   end
 
   defp search_one(source, handle, basename, value, field, opts) do

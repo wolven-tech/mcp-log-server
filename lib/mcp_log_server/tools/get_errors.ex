@@ -15,7 +15,9 @@ defmodule McpLogServer.Tools.GetErrors do
     do:
       "Extract error/warning lines from a log file. Use level to control minimum severity. " <>
         "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since/until; " <>
-        "the unparsed_ts count in the result reveals when filtering was degraded this way."
+        "the unparsed_ts count in the result reveals when filtering was degraded this way. " <>
+        "If the lines cap was hit, the result carries an omissions block saying how many matches " <>
+        "were withheld — absent when you saw everything."
 
   @impl true
   def schema do
@@ -54,9 +56,10 @@ defmodule McpLogServer.Tools.GetErrors do
     opts = maybe_add_time_opts(opts, args)
 
     case UseCases.GetErrors.run(log_dir, file, lines, opts) do
-      {:ok, %{entries: errors, unparsed_ts: unparsed_ts}} ->
+      {:ok, %{entries: errors, unparsed_ts: unparsed_ts, omissions: omissions}} ->
         data = %{file: file, error_count: length(errors), matches: errors}
         data = if unparsed_ts != nil, do: Map.put(data, :unparsed_ts, unparsed_ts), else: data
+        data = McpLogServer.Domain.Omissions.attach(data, omissions)
         {:ok, ResponseFormatter.format(:error_results, data, format)}
 
       {:error, reason} ->
