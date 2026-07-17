@@ -51,6 +51,13 @@ source_rotations =
 
 config :mcp_log_server, :source_rotations, source_rotations
 
+# Incremental persistent index (issue #7 P7). Default on; LOG_INDEX=off
+# (or 0/false) disables it — every query then takes the linear-scan path
+# with index_used: false, results identical.
+config :mcp_log_server,
+       :index_enabled,
+       System.get_env("LOG_INDEX", "on") not in ["off", "0", "false"]
+
 # Declared timestamp formats: glob=format pairs separated by ';'
 # e.g. LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; app*.log=epoch_ms; dev-*.log=%H:%M:%S'
 # Validated at boot by McpLogServer.Config.TsFormats.init!/0.

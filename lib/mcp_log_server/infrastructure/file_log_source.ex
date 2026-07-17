@@ -68,6 +68,40 @@ defmodule McpLogServer.Infrastructure.FileLogSource do
   end
 
   @impl true
+  def stream_lines_from(path, 0), do: stream_lines(path)
+
+  def stream_lines_from(path, offset) do
+    Stream.resource(
+      fn ->
+        case :file.open(path, [:read, :raw, :binary, {:read_ahead, 65_536}]) do
+          {:ok, io} ->
+            case :file.position(io, offset) do
+              {:ok, _} -> io
+              _ -> (:file.close(io) && :halted) || :halted
+            end
+
+          _ ->
+            :halted
+        end
+      end,
+      fn
+        :halted ->
+          {:halt, :halted}
+
+        io ->
+          case :file.read_line(io) do
+            {:ok, data} -> {[String.trim_trailing(data)], io}
+            _ -> {:halt, io}
+          end
+      end,
+      fn
+        :halted -> :ok
+        io -> :file.close(io)
+      end
+    )
+  end
+
+  @impl true
   def read(path) do
     case File.read(path) do
       {:ok, content} -> {:ok, content}

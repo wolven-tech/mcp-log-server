@@ -18,4 +18,8 @@ defmodule McpLogServer.UseCases.Deps do
   @spec log_sync(keyword()) :: module()
   def log_sync(opts \\ []),
     do: Keyword.get(opts, :sync) || Application.fetch_env!(:mcp_log_server, :log_sync)
+
+  @spec log_index(keyword()) :: module()
+  def log_index(opts \\ []),
+    do: Keyword.get(opts, :index) || Application.fetch_env!(:mcp_log_server, :index_impl)
 end

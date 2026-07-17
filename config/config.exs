@@ -14,3 +14,4 @@ config :logger,
 config :mcp_log_server, :log_source, McpLogServer.Infrastructure.FileLogSource
 config :mcp_log_server, :config_impl, McpLogServer.Infrastructure.EnvConfig
 config :mcp_log_server, :log_sync, McpLogServer.Infrastructure.CloudSync
+config :mcp_log_server, :index_impl, McpLogServer.Infrastructure.LogIndex

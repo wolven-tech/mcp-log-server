@@ -19,14 +19,24 @@ defmodule McpLogServer.Application do
     retention_days = McpLogServer.Infrastructure.EnvConfig.log_retention_days()
     McpLogServer.Infrastructure.FileLogSource.cleanup_old_logs(log_dir, retention_days)
 
-    children = [
-      # Streamed LOG_SOURCES ingestion (one worker per declared source).
-      # Started before the transport so live files exist by the time the
-      # first tools/call arrives; isolated one_for_one so a source crash
-      # can never take the MCP session down.
-      {McpLogServer.Infrastructure.SourceSupervisor, log_dir: log_dir},
-      {McpLogServer.Transport.Stdio, handler: &McpLogServer.Server.handle_message/1}
-    ]
+    # Incremental persistent index (issue #7 P7). Optional: with LOG_INDEX=off
+    # the process never starts, every index lookup misses, and all tools take
+    # the linear-scan path with identical results (index_used: false).
+    index_children =
+      if McpLogServer.Infrastructure.EnvConfig.index_enabled?(),
+        do: [{McpLogServer.Infrastructure.LogIndex, []}],
+        else: []
+
+    children =
+      index_children ++
+        [
+          # Streamed LOG_SOURCES ingestion (one worker per declared source).
+          # Started before the transport so live files exist by the time the
+          # first tools/call arrives; isolated one_for_one so a source crash
+          # can never take the MCP session down.
+          {McpLogServer.Infrastructure.SourceSupervisor, log_dir: log_dir},
+          {McpLogServer.Transport.Stdio, handler: &McpLogServer.Server.handle_message/1}
+        ]
 
     opts = [strategy: :one_for_one, name: McpLogServer.Supervisor]
     Supervisor.start_link(children, opts)

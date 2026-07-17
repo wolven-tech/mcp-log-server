@@ -55,6 +55,17 @@ defmodule McpLogServer.Ports.LogSource do
   @doc "Lazily stream the log's lines with trailing whitespace trimmed."
   @callback stream_lines(handle()) :: Enumerable.t()
 
+  @doc """
+  Like `stream_lines/1`, but starting at a byte `offset` that MUST lie on
+  a line boundary (0 or just past a newline). Optional: the indexed read
+  path (issue #7 P7) uses it to skip a proven-excludable prefix; adapters
+  that cannot seek simply do not export it and callers fall back to
+  `stream_lines/1`.
+  """
+  @callback stream_lines_from(handle(), offset :: non_neg_integer()) :: Enumerable.t()
+
+  @optional_callbacks stream_lines_from: 2
+
   @doc "Read the entire raw content of a log."
   @callback read(handle()) :: {:ok, binary()} | {:error, String.t()}
 

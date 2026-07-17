@@ -37,4 +37,13 @@ defmodule McpLogServer.Infrastructure.EnvConfig do
   @spec source_rotations() :: pos_integer()
   def source_rotations,
     do: max(Application.get_env(:mcp_log_server, :source_rotations, 3), 1)
+
+  @doc """
+  Is the incremental persistent index enabled (`LOG_INDEX`, default on)?
+  When off, the `LogIndex` process is not started; every index query
+  answers `:miss` and tools linear-scan with `index_used: false`.
+  """
+  @spec index_enabled?() :: boolean()
+  def index_enabled?,
+    do: Application.get_env(:mcp_log_server, :index_enabled, true)
 end

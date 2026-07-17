@@ -35,11 +35,18 @@ defmodule McpLogServer.Infrastructure.SourceWorker do
   alias McpLogServer.Domain.Backoff
   alias McpLogServer.Domain.SourceTag
   alias McpLogServer.Infrastructure.EnvConfig
+  alias McpLogServer.Infrastructure.LogIndex
   alias McpLogServer.Infrastructure.SourceStatus
 
   # Port line-buffer limit; longer lines arrive as :noeol chunks and are
   # reassembled in state.buffer.
   @max_line 65_536
+
+  # Ingest hook (issue #7 P7): after this many appended bytes, ask the
+  # index to extend its coverage of the live file. Fire-and-forget cast —
+  # ingest never waits on indexing, and a missing/disabled LogIndex is a
+  # silent no-op.
+  @index_notify_bytes 1_048_576
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -57,6 +64,7 @@ defmodule McpLogServer.Infrastructure.SourceWorker do
 
     rotations = Keyword.get_lazy(opts, :rotations, fn -> EnvConfig.source_rotations() end)
     backoff_opts = Keyword.take(opts, [:initial_ms, :cap_ms, :healthy_after_ms])
+    index_notify_bytes = Keyword.get(opts, :index_notify_bytes, @index_notify_bytes)
 
     File.mkdir_p!(log_dir)
     path = Path.join(log_dir, spec.name <> ".log")
@@ -79,7 +87,9 @@ defmodule McpLogServer.Infrastructure.SourceWorker do
       backoff_ms: Backoff.initial_ms(backoff_opts),
       port: nil,
       buffer: "",
-      spawned_at: nil
+      spawned_at: nil,
+      index_notify_bytes: index_notify_bytes,
+      unindexed_bytes: 0
     }
 
     {:ok, state, {:continue, :spawn}}
@@ -175,7 +185,23 @@ defmodule McpLogServer.Infrastructure.SourceWorker do
     data = SourceTag.tag_line(state.name, line) <> "\n"
     state = maybe_rotate(state, byte_size(data))
     IO.binwrite(state.device, data)
+
     %{state | size: state.size + byte_size(data)}
+    |> notify_index(byte_size(data))
+  end
+
+  # Batched index extension: one cast per @index_notify_bytes of appends,
+  # never per line. GenServer.cast to an unstarted LogIndex is a no-op, so
+  # ingest works identically with indexing disabled.
+  defp notify_index(state, written) do
+    unindexed = state.unindexed_bytes + written
+
+    if unindexed >= state.index_notify_bytes do
+      LogIndex.appended(state.path)
+      %{state | unindexed_bytes: 0}
+    else
+      %{state | unindexed_bytes: unindexed}
+    end
   end
 
   defp flush_buffer(%{buffer: ""} = state), do: state
@@ -205,7 +231,14 @@ defmodule McpLogServer.Infrastructure.SourceWorker do
     File.rename(state.path, rotated_path(state, 1))
     {:ok, device} = File.open(state.path, [:append, :raw, :binary])
     log_stderr(state, "rotated #{Path.basename(state.path)} (keep #{state.rotations})")
-    %{state | device: device, size: 0}
+
+    # Every file in the rotation chain just changed identity — drop their
+    # index entries so no stale checkpoint can ever serve a seek. Rebuilds
+    # happen lazily on the next query.
+    LogIndex.invalidate(state.path)
+    for k <- 1..state.rotations, do: LogIndex.invalidate(rotated_path(state, k))
+
+    %{state | device: device, size: 0, unindexed_bytes: 0}
   end
 
   defp rotated_path(state, k), do: Path.join(state.log_dir, "#{state.name}.#{k}.log")
