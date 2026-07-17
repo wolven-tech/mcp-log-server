@@ -10,7 +10,7 @@ title: Home
 
     <div class="badge-group">
       <span class="badge purple">MCP Compatible</span>
-      <span class="badge green">9 Tools</span>
+      <span class="badge green">12 Tools</span>
       <span class="badge blue">JSON + Plain Text</span>
       <span class="badge amber">~50% Token Savings</span>
       <span class="badge">Elixir 1.17+</span>
@@ -62,8 +62,8 @@ title: Home
 
 <section id="tools">
   <div class="container">
-    <h2>9 Tools</h2>
-    <p class="section-sub">Organized by workflow stage: discover, analyze, correlate.</p>
+    <h2>12 Tools</h2>
+    <p class="section-sub">Organized by workflow stage: discover, analyze, correlate, maintain.</p>
 
     <table class="tools-table">
       <thead>
@@ -75,13 +75,17 @@ title: Home
         <tr><td>log_stats</td><td>Line count, error/warn/fatal counts, file size &mdash; quick health check</td></tr>
         <tr><td>time_range</td><td>Earliest and latest timestamps with human-readable span</td></tr>
         <tr><td colspan="2" class="tool-category">Analysis</td></tr>
+        <tr><td>summarize</td><td>"What changed?" &mdash; diff a time window against the one before it: new/gone templates, error-rate and volume deltas</td></tr>
         <tr><td>all_errors</td><td>Aggregate errors across ALL files &mdash; best first call</td></tr>
         <tr><td>get_errors</td><td>Errors with severity filtering, exclude patterns, and time range</td></tr>
-        <tr><td>search_logs</td><td>Regex search with context lines, JSON field targeting, time range</td></tr>
-        <tr><td>tail_log</td><td>Last N lines with optional <code>since</code> filtering</td></tr>
+        <tr><td>search_logs</td><td>Regex search with context lines, JSON field targeting, time range, template rollup, polling cursor</td></tr>
+        <tr><td>tail_log</td><td>Last N lines with optional <code>since</code> filtering and polling cursor</td></tr>
+        <tr><td>aggregate</td><td>Aggregate on a JSON field: presence proof, value histogram, or count</td></tr>
         <tr><td colspan="2" class="tool-category">Correlation</td></tr>
-        <tr><td>correlate</td><td>Trace a request/session across ALL files &mdash; unified timeline</td></tr>
+        <tr><td>correlate</td><td>Trace a request/session across ALL files &mdash; unified timeline; anchor mode correlates around a symptom regex</td></tr>
         <tr><td>trace_ids</td><td>Discover unique session/request/trace IDs with counts</td></tr>
+        <tr><td colspan="2" class="tool-category">Maintenance</td></tr>
+        <tr><td>sync_logs</td><td>Pull logs from cloud storage (gs://, s3://, az://) into the log directory</td></tr>
       </tbody>
     </table>
 
@@ -94,35 +98,41 @@ title: Home
 <section id="workflow">
   <div class="container">
     <h2>Recommended Workflow</h2>
-    <p class="section-sub">From triage to root cause in 5 steps.</p>
+    <p class="section-sub">From triage to root cause in 6 steps.</p>
 
     <div class="workflow">
       <div class="workflow-step">
         <div class="step-num">1</div>
+        <h4>summarize</h4>
+        <p>What changed?</p>
+      </div>
+      <div class="workflow-arrow">&rarr;</div>
+      <div class="workflow-step">
+        <div class="step-num">2</div>
         <h4>all_errors</h4>
         <p>What's broken?</p>
       </div>
       <div class="workflow-arrow">&rarr;</div>
       <div class="workflow-step">
-        <div class="step-num">2</div>
+        <div class="step-num">3</div>
         <h4>log_stats</h4>
         <p>How bad is it?</p>
       </div>
       <div class="workflow-arrow">&rarr;</div>
       <div class="workflow-step">
-        <div class="step-num">3</div>
+        <div class="step-num">4</div>
         <h4>get_errors</h4>
         <p>Filter by severity + time</p>
       </div>
       <div class="workflow-arrow">&rarr;</div>
       <div class="workflow-step">
-        <div class="step-num">4</div>
+        <div class="step-num">5</div>
         <h4>search_logs</h4>
         <p>Context around errors</p>
       </div>
       <div class="workflow-arrow">&rarr;</div>
       <div class="workflow-step">
-        <div class="step-num">5</div>
+        <div class="step-num">6</div>
         <h4>correlate</h4>
         <p>Cross-service trace</p>
       </div>
@@ -154,11 +164,23 @@ title: Home
       </div>
       <div class="card">
         <h3><span class="card-icon red">&#9731;</span> Token Efficiency</h3>
-        <p>TOON format delivers ~50% token savings over JSON for tabular data. For sessions with 20+ tool calls, this compounds into thousands of saved tokens and faster responses.</p>
+        <p>TOON format delivers ~50% token savings over JSON for tabular data. Template rollup collapses 10,000 repeats of the same error into one row with a count. For sessions with 20+ tool calls, this compounds into thousands of saved tokens.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon green">&#9654;</span> Streamed Sources</h3>
+        <p>Declare <code>flyctl logs</code>, <code>kubectl logs -f</code>, <code>journalctl -f</code> commands via <code>LOG_SOURCES</code> and the server tees them into rotating files &mdash; remote production logs become searchable, tailable, and correlatable. Polling cursors on <code>tail_log</code> and <code>search_logs</code> return only what's new since your last call.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon amber">&#9889;</span> Persistent Index</h3>
+        <p>An incremental ETS+DETS index under <code>LOG_DIR/.index/</code> accelerates time-window and severity scans. Pure cache: results are identical without it, every response reports <code>index_used</code>, and <code>LOG_INDEX=off</code> disables it.</p>
+      </div>
+      <div class="card">
+        <h3><span class="card-icon blue">&#10003;</span> Honest Results</h3>
+        <p>Nothing truncated silently &mdash; every capped list carries an <code>omissions</code> block. Unparseable timestamps never drop lines (fail-open); they're counted as <code>unparsed_ts</code> with sampled parse ratios. Dev-server formats (bare <code>HH:MM:SS</code>, <code>[vite]</code>, ANSI colors) parse out of the box; declare the rest via <code>LOG_TS_FORMATS</code>.</p>
       </div>
       <div class="card">
         <h3><span class="card-icon purple">&#9875;</span> Clean Architecture</h3>
-        <p>Tool behaviour pattern &mdash; add a new tool by creating one module. 7 focused domain modules. Runtime-configurable patterns via <code>persistent_term</code>. One dependency (Jason). OTP supervision for crash resilience.</p>
+        <p>Ports &amp; adapters: behaviours for log sources, index, sync, and config; thin tools calling one use-case each; a pure functional domain. Add a tool with one use-case + one module + one registry line. One dependency (Jason). OTP supervision for crash resilience.</p>
       </div>
     </div>
   </div>
@@ -225,20 +247,20 @@ title: Home
       </div>
       <div class="arch-arrow">&darr;</div>
       <div class="arch-layer" style="background: rgba(63, 185, 80, 0.1); border-color: rgba(63, 185, 80, 0.3);">
-        Tools (behaviour + 9 self-contained modules)
+        Tools (behaviour + 12 thin modules) &rarr; Use Cases (one per capability)
       </div>
       <div class="arch-arrow">&darr;</div>
       <div class="arch-layer" style="background: rgba(210, 153, 34, 0.1); border-color: rgba(210, 153, 34, 0.3);">
-        Domain (7 focused modules + Correlator)
+        Ports (LogSource &middot; LogIndex &middot; LogSync &middot; Config behaviours)
       </div>
       <div class="arch-arrow">&darr;</div>
       <div class="arch-layer" style="background: rgba(248, 81, 73, 0.1); border-color: rgba(248, 81, 73, 0.3);">
-        Protocol (TOON + ResponseFormatter + JSON-RPC)
+        Pure Domain + Infrastructure adapters (files, streamed sources, ETS+DETS index)
       </div>
     </div>
 
     <p style="text-align: center; margin-top: 24px; color: var(--text-muted); font-size: 0.9rem;">
-      Adding a new tool = create one module + add one line to the tool list. <a href="concepts/ARCHITECTURE.html">Read more &rarr;</a>
+      Adding a new tool = one use-case + one thin module + one registry line. <a href="concepts/ARCHITECTURE.html">Read more &rarr;</a>
     </p>
   </div>
 </section>
@@ -263,6 +285,21 @@ title: Home
         <div class="var-name">LOG_RETENTION_DAYS</div>
         <div class="var-desc">Auto-delete logs older than N days on startup</div>
         <div class="var-default">Default: disabled</div>
+      </div>
+      <div class="config-item">
+        <div class="var-name">LOG_SOURCES</div>
+        <div class="var-desc">Streamed sources to ingest, e.g. fly:cmd=flyctl logs -a my-app</div>
+        <div class="var-default">Default: none</div>
+      </div>
+      <div class="config-item">
+        <div class="var-name">LOG_TS_FORMATS</div>
+        <div class="var-desc">Declared timestamp formats per file glob, e.g. dev-*.log=%H:%M:%S</div>
+        <div class="var-default">Default: auto-detect</div>
+      </div>
+      <div class="config-item">
+        <div class="var-name">LOG_INDEX</div>
+        <div class="var-desc">Set off to disable the persistent index (results identical, just slower)</div>
+        <div class="var-default">Default: on</div>
       </div>
       <div class="config-item">
         <div class="var-name">LOG_EXTRA_PATTERNS</div>
@@ -295,11 +332,11 @@ title: Home
       </a>
       <a href="https://github.com/wolven-tech/mcp-log-server/blob/main/examples/README.md" class="card" style="text-decoration: none;">
         <h3>Examples Walkthrough</h3>
-        <p>Debug a cascading failure step-by-step using all 9 tools.</p>
+        <p>Debug a cascading failure step-by-step using the full toolset.</p>
       </a>
       <a href="reference/TOOLS.html" class="card" style="text-decoration: none;">
         <h3>Tool Reference</h3>
-        <p>Complete API for all 9 tools with parameters and examples.</p>
+        <p>Complete API for all 12 tools with parameters and examples.</p>
       </a>
       <a href="guides/USE_CASE_MONOREPO.html" class="card" style="text-decoration: none;">
         <h3>Use Case: Monorepo</h3>

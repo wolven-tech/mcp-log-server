@@ -822,6 +822,37 @@ When the `max_values` cap was hit, a `# {...}` metadata line carries `"omissions
 
 ---
 
+## Maintenance Tools
+
+### sync_logs
+
+Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cloud Storage), `s3://` (Amazon S3), and `az://` (Azure Blob) URIs. Requires the respective CLI tool (`gsutil`, `aws`, `az`) to be installed and authenticated on the host running the server.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `source` | string | Yes | -- | Cloud storage URI (e.g. `gs://bucket/logs/`, `s3://bucket/logs/`, `az://container/logs/`) |
+| `prefix` | string | No | -- | Only sync files matching this name prefix |
+| `since` | string | No | -- | Only sync files modified after this time. ISO 8601 or relative shorthand (e.g. `1h`, `1d`) |
+
+**Example request:**
+```json
+{
+  "name": "sync_logs",
+  "arguments": {
+    "source": "gs://acme-prod-logs/api/",
+    "prefix": "api-"
+  }
+}
+```
+
+Synced files land in `LOG_DIR` and become visible to every other tool (`list_logs`, `all_errors`, `correlate`, ...). Files exceeding `MAX_LOG_FILE_MB` are still subject to the size guardrail after syncing.
+
+**When to use:** Bring production logs stored in a cloud bucket into the local analysis window without leaving the MCP session.
+
+---
+
 ## Error Handling
 
 All tools return MCP error content for common failure cases:

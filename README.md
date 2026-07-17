@@ -59,7 +59,7 @@ Your App → writes logs → /tmp/mcp-logs/*.log
                     asks questions, gets answers
 ```
 
-The server reads `.log` files from a directory and exposes 9 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). It auto-detects JSON structured logs and plain text, extracts severity from standard fields, parses timestamps, and correlates entries across files.
+The server reads `.log` files from a directory and exposes 12 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). It auto-detects JSON structured logs and plain text, extracts severity from standard fields, parses timestamps, and correlates entries across files.
 
 Output uses **TOON (Token-Oriented Object Notation)** — a pipe-delimited tabular format that delivers ~50% token savings over JSON:
 
@@ -74,7 +74,7 @@ ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
 
 ## Tools
 
-9 tools organized by workflow stage:
+12 tools organized by workflow stage:
 
 ### Discovery
 
@@ -88,26 +88,36 @@ ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
 
 | Tool | What it does |
 |------|-------------|
+| [`summarize`](docs/reference/TOOLS.md#summarize) | "What changed?" — diff a time window against the window before it: new/gone message templates, error-rate delta, volume delta |
 | [`all_errors`](docs/reference/TOOLS.md#all_errors) | Aggregate errors across ALL log files — best first call |
 | [`get_errors`](docs/reference/TOOLS.md#get_errors) | Extract errors with severity filtering (`level`), exclusion patterns, and time range |
-| [`search_logs`](docs/reference/TOOLS.md#search_logs) | Regex search with context lines, JSON field targeting, and time range |
-| [`tail_log`](docs/reference/TOOLS.md#tail_log) | Last N lines from a file, with optional `since` filtering |
+| [`search_logs`](docs/reference/TOOLS.md#search_logs) | Regex search with context lines, JSON field targeting, time range, template rollup, and polling cursor |
+| [`tail_log`](docs/reference/TOOLS.md#tail_log) | Last N lines from a file, with optional `since` filtering and polling cursor |
+| [`aggregate`](docs/reference/TOOLS.md#aggregate) | Aggregate on a JSON field: presence proof (`exists`), value histogram (`values`), or total count |
 
 ### Correlation
 
 | Tool | What it does |
 |------|-------------|
-| [`correlate`](docs/reference/TOOLS.md#correlate) | Trace a request/session across ALL log files — unified timeline sorted by timestamp |
+| [`correlate`](docs/reference/TOOLS.md#correlate) | Trace a request/session across ALL log files — unified timeline sorted by timestamp; anchor mode turns a symptom regex into ±time windows |
 | [`trace_ids`](docs/reference/TOOLS.md#trace_ids) | Discover unique session/request/trace IDs with counts and time ranges |
+
+### Maintenance
+
+| Tool | What it does |
+|------|-------------|
+| [`sync_logs`](docs/reference/TOOLS.md#sync_logs) | Pull logs from cloud storage (`gs://`, `s3://`, `az://`) into the log directory |
 
 ### Recommended Workflow
 
 ```
+0. summarize               → "What changed in the last 15 minutes?"
 1. all_errors              → "What's broken?"
 2. log_stats / time_range  → "How bad? What time window?"
 3. get_errors + level      → "Show me only real errors, no warnings"
 4. search_logs + context   → "What happened around this error?"
-5. correlate               → "Trace this request across services"
+5. aggregate               → "Did any line emit this field? What values?"
+6. correlate               → "Trace this request across services"
 ```
 
 See the [Tool Reference](docs/reference/TOOLS.md) for complete parameter documentation and examples.
@@ -231,6 +241,33 @@ Trace a request, session, or trace ID across every log file in one call:
 
 Returns a unified timeline sorted by timestamp, showing the request's path through gateway, API, worker, and any other service.
 
+No ID to search for? Anchor mode takes a symptom regex instead — each match becomes a ±window (e.g. `"±10s"`) and everything inside those windows across all files is returned:
+
+```json
+{"name": "correlate", "arguments": {"anchor": {"pattern": "boot loop detected", "window": "±10s"}}}
+```
+
+### "What Changed?" Summaries and Template Rollup
+
+`summarize` diffs a time window against the equal-length window before it in one call: new/gone message templates (with counts, `instances_seen`, first timestamp, sample line), error-rate delta, and volume delta per source — the highest-leverage first call during an incident.
+
+`search_logs` and `all_errors` accept `rollup: true` to group repeated lines into message templates (numbers, IDs, and hex strings normalized away), so 10,000 repeats of the same error cost one row with a count and `instances_seen`.
+
+### Polling Cursors
+
+`tail_log` and `search_logs` return an opaque `cursor`. Pass it back on the next call to receive only lines appended since — watch a deploy or restart loop without re-reading (or re-paying for) the whole file.
+
+### Persistent Index
+
+An incremental ETS+DETS index under `LOG_DIR/.index/` accelerates time-window and severity scans. It is a pure cache: queries never block on it, results are identical with or without it, and every response reports `index_used` so you know which path ran. Disable with `LOG_INDEX=off`. See [ADR-001](docs/decisions/001-index-storage.md) for the storage choice.
+
+### Honest Truncation and Fail-Open Timestamps
+
+- Every capped list is marked with a uniform `omissions` block (skipped files, capped rows) — nothing is truncated silently.
+- Lines whose timestamps cannot be parsed are never dropped by `since`/`until` (fail-open); instead responses count them as `unparsed_ts`, and `log_stats`/`time_range` report a sampled `ts_parse_ratio`.
+- Dev-server output parses out of the box: bare `HH:MM:SS` prefixes, `[vite]`-style stamps, `AM`/`PM`, and ANSI color codes are handled.
+- When auto-detection is not enough, declare formats per file glob: `LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; dev-*.log=%H:%M:%S'`.
+
 ### Streamed Sources (Fly, k8s, journald, Docker)
 
 Not all logs live in files. Declare streaming commands and the server tees them into rotating files under `LOG_DIR`, making remote production logs searchable, tailable, and correlatable with every tool above:
@@ -287,6 +324,8 @@ LOG_EXTRA_PATTERNS="circuit.breaker|deadline.exceeded" docker run ...
 | `LOG_SOURCES` | _(none)_ | Streamed sources to ingest: `name:cmd=command` entries separated by `;` |
 | `LOG_SOURCE_ROTATE_MB` | `MAX_LOG_FILE_MB` | Rotate a streamed source's file before it exceeds this size |
 | `LOG_SOURCE_ROTATIONS` | `3` | Rotated files kept per streamed source |
+| `LOG_TS_FORMATS` | _(none)_ | Declared timestamp formats: `glob=format` entries separated by `;` (e.g. `fly-*.log=%FT%T%.fZ; dev-*.log=%H:%M:%S`) |
+| `LOG_INDEX` | `on` | Set `off` (or `0`/`false`) to disable the persistent index; queries fall back to linear scans with identical results |
 | `LOG_EXTRA_PATTERNS` | _(none)_ | Additional error patterns (pipe-separated regex) |
 | `LOG_ERROR_PATTERNS` | _(none)_ | Override default error patterns |
 | `LOG_WARN_PATTERNS` | _(none)_ | Override default warn patterns |
@@ -303,14 +342,18 @@ Protocol (JSON-RPC 2.0, TOON)
     ↓
 Server (method routing)
     ↓
-Tools (behaviour + 9 self-contained modules)
+Tools (behaviour + 12 thin modules: validate args, call one use-case)
     ↓
-Domain (7 focused modules: FileAccess, LogSearch, ErrorExtractor, ...)
+Use Cases (orchestration, one per tool capability)
     ↓
-Config (runtime patterns via persistent_term)
+Ports (LogSource · LogIndex · LogSync · Config behaviours)
+   ↙                                  ↘
+Domain (pure functions:               Infrastructure (adapters: file source,
+  Correlator, Rollup, SparseIndex,      streamed source workers, ETS+DETS
+  WindowDiff, TimestampParser, ...)     index, cloud sync, env config)
 ```
 
-**Adding a new tool** = create one module implementing the `Tool` behaviour + add one line to the tool list. No existing code modified.
+**Adding a new tool** = one use-case module + one thin tool module implementing the `Tool` behaviour + one line in the registry. No existing code modified.
 
 See the [Architecture docs](docs/concepts/ARCHITECTURE.md) for the full module breakdown, design decisions, and security model.
 
@@ -344,9 +387,10 @@ See the [Architecture docs](docs/concepts/ARCHITECTURE.md) for the full module b
 
 | | |
 |---|---|
-| [Tool Reference](docs/reference/TOOLS.md) | All 9 tools with parameters, examples, and response formats |
+| [Tool Reference](docs/reference/TOOLS.md) | All 12 tools with parameters, examples, and response formats |
 | [TOON Format](docs/concepts/TOON_FORMAT.md) | Token-Oriented Object Notation specification |
-| [Architecture](docs/concepts/ARCHITECTURE.md) | Layer design, Tool behaviour, SOLID principles |
+| [Architecture](docs/concepts/ARCHITECTURE.md) | Ports & adapters layer design, Tool behaviour, security model |
+| [ADR-001: Index Storage](docs/decisions/001-index-storage.md) | Why the persistent index uses ETS+DETS instead of SQLite |
 | [Contributing](docs/CONTRIBUTING.md) | Development standards and how to add tools |
 
 ---
@@ -354,7 +398,8 @@ See the [Architecture docs](docs/concepts/ARCHITECTURE.md) for the full module b
 ## Security
 
 - **Path traversal protection** — file access restricted to `LOG_DIR`; only basenames accepted
-- **Read-only** — no file writes, no command execution, no network access
+- **Read-only tools** — no tool writes outside `LOG_DIR` (`sync_logs` fetches into `LOG_DIR`; the index lives under `LOG_DIR/.index/`)
+- **No arbitrary command execution** — `sync_logs` shells out only to the fixed cloud CLIs (`gsutil`/`aws`/`az`); `LOG_SOURCES` commands are operator-declared boot configuration, never built from tool input
 - **Stdio isolation** — MCP protocol on stdout, logger on stderr (no mixing)
 - **File size limits** — files exceeding `MAX_LOG_FILE_MB` are skipped with a warning
 

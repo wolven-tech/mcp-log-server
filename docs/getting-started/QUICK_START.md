@@ -5,7 +5,7 @@ status: active
 audience: [developers]
 difficulty: beginner
 created: 2026-03-18
-lastModified: 2026-03-18
+lastModified: 2026-07-17
 tags: [getting-started, setup, docker]
 ---
 
@@ -130,6 +130,18 @@ Create `.mcp.json` in your project root:
   }
 }
 ```
+
+#### Optional environment variables
+
+`LOG_DIR` is all you need to start. Useful extras (set them in the `docker run` args or the launch command):
+
+| Variable | Purpose |
+|----------|---------|
+| `LOG_SOURCES` | Ingest streamed logs into rotating files, e.g. `fly:cmd=flyctl logs -a my-app` |
+| `LOG_TS_FORMATS` | Declare timestamp formats per file glob when auto-detection can't, e.g. `dev-*.log=%H:%M:%S` |
+| `LOG_INDEX` | Set `off` to disable the persistent index (default: on) |
+
+See the [README configuration table](../../README.md#configuration) for the full list.
 
 ---
 

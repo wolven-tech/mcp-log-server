@@ -2,7 +2,7 @@
 title: MCP Log Server Documentation
 description: Documentation index for the MCP Log Server project
 status: active
-lastModified: 2026-03-20
+lastModified: 2026-07-17
 ---
 
 # MCP Log Server Documentation
@@ -12,7 +12,7 @@ lastModified: 2026-03-20
 | Document | Audience | Description |
 |----------|----------|-------------|
 | [Quick Start](getting-started/QUICK_START.md) | Everyone | Get the server running in 5 minutes |
-| [Examples Walkthrough](../examples/README.md) | Everyone | Debug a real incident step-by-step using all 9 tools |
+| [Examples Walkthrough](../examples/README.md) | Everyone | Debug a real incident step-by-step using the tools |
 
 ## How-To Guides
 
@@ -40,7 +40,13 @@ lastModified: 2026-03-20
 
 | Document | Audience | Description |
 |----------|----------|-------------|
-| [Tool Reference](reference/TOOLS.md) | Developers | Complete API reference for all 9 tools |
+| [Tool Reference](reference/TOOLS.md) | Developers | Complete API reference for all 12 tools |
+
+## Decisions
+
+| Document | Audience | Description |
+|----------|----------|-------------|
+| [ADR-001: Index Storage](decisions/001-index-storage.md) | Developers | Why the persistent index uses ETS+DETS under `LOG_DIR/.index/` instead of SQLite |
 
 ## Contributing
 
