@@ -15,6 +15,7 @@ defmodule McpLogServer.Tools.Registry do
     McpLogServer.Tools.TraceIds,
     McpLogServer.Tools.AllErrors,
     McpLogServer.Tools.Aggregate,
+    McpLogServer.Tools.Summarize,
     McpLogServer.Tools.SyncLogs
   ]
 
