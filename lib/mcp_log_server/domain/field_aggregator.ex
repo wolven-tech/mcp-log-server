@@ -94,6 +94,18 @@ defmodule McpLogServer.Domain.FieldAggregator do
   def add_non_json(acc), do: %{acc | non_json: acc.non_json + 1}
 
   @doc """
+  Fold an entire file PROVEN (by the persistent index, issue #7 P7) to
+  contain zero occurrences of the field: its `json_lines` JSON lines all
+  count as `without_field` and its `non_json` lines as `non_json` —
+  exactly the contribution a full scan of the file would have produced,
+  without the scan.
+  """
+  @spec add_absent_file(acc(), non_neg_integer(), non_neg_integer()) :: acc()
+  def add_absent_file(acc, json_lines, non_json) do
+    %{acc | without_field: acc.without_field + json_lines, non_json: acc.non_json + non_json}
+  end
+
+  @doc """
   Produce the result for an op. Returns `{result_map, omissions}` — the
   omissions block is non-empty only when the `values` histogram was capped.
   """
