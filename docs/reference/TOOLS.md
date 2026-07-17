@@ -60,6 +60,47 @@ LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; app*.log=epoch_ms; dev-*.log=%H:%M:%S'
 
 ---
 
+## Streamed Sources: `LOG_SOURCES`
+
+The server is not limited to `.log` files that already exist under `LOG_DIR`. Declare streaming commands -- Fly, Kubernetes, journald, Docker, anything that writes logs to stdout -- and the server tees each stream into a rotating file that every tool can search, tail, and correlate with zero special-casing:
+
+```bash
+LOG_SOURCES='fly:cmd=flyctl logs -a my-app; k8s:cmd=kubectl logs -f deploy/api'
+
+# More examples
+LOG_SOURCES='journal:cmd=journalctl -f -o short-iso'
+LOG_SOURCES='web:cmd=docker logs -f web-1'
+LOG_SOURCES='demo:cmd=sh -c "while true; do date; sleep 1; done"'
+```
+
+- Entries are `name:cmd=command`, separated by `;` (a `;` inside quotes belongs to the command, as in the `demo` example). Names are restricted to `[A-Za-z0-9_-]` so they are always filename-safe.
+- The declaration is validated ONCE at boot; a malformed entry aborts startup with a descriptive error instead of silently dropping the stream you asked for.
+
+### How it works
+
+- One supervised worker per source spawns the command and appends its stdout to `LOG_DIR/<name>.log`. The file exists from boot, so `list_logs` shows the source immediately.
+- **No shell involved:** the command string is tokenized (quotes honored) and spawned directly via the OS `exec` -- nothing is string-interpolated into a shell. To use shell features (pipes, loops), declare them explicitly: `demo:cmd=sh -c "..."`.
+- **Source tagging:** every ingested line is prefixed with `[src:<name>] `. The tag keeps per-line attribution visible when `correlate` merges many files into one timeline (and when the file is opened outside the server). The timestamp parser strips the tag before matching, so tagged lines parse exactly like the originals. Note: a tagged NDJSON line is no longer a bare JSON object, so streamed files are treated as plain text -- use `LOG_TS_FORMATS` if the stream's timestamps are not auto-detected.
+- **Rotation:** the file is rotated to `<name>.1.log` ... `<name>.N.log` *before* it would exceed the threshold. An unattended `-f` stream grows without bound and would otherwise trip the `MAX_LOG_FILE_MB` oversized-file skip -- silently killing the very source you declared. Rotated files remain ordinary static logs: searchable, and included in `correlate`.
+- **Restart with backoff:** when the command exits, the worker respawns it with exponential backoff (1s → 2s → ... capped at 60s), resetting after a run that stayed healthy for 30s. Restarts are logged to **stderr only** -- stdout carries MCP JSON-RPC and is never touched. A crash-looping source never takes down the server or the other sources.
+- `list_logs` marks these files `live: true` with the source name and worker `status` (`running` / `backing_off` / `dead`; `dead` means the executable could not be found -- still retried, in case PATH is fixed live).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_SOURCES` | _(none)_ | `name:cmd=command` entries separated by `;` |
+| `LOG_SOURCE_ROTATE_MB` | `MAX_LOG_FILE_MB` | Rotate `<name>.log` before it exceeds this size |
+| `LOG_SOURCE_ROTATIONS` | `3` | Rotated files kept per source (`<name>.1.log` ... `<name>.N.log`) |
+
+### Security: `LOG_SOURCES` runs arbitrary commands
+
+Each declared command runs **with the server's own privileges**, as a child of the server process. This is the same trust level as the command that launches the server itself -- anyone who can set the server's environment can already run code as the server's user -- but be deliberate about it: treat `LOG_SOURCES` like a startup script, review it in checked-in MCP configs, and never build it from untrusted input.
+
+### Run modes
+
+Streamed sources work in both release and escript mode (spawning needs only the BEAM, not a full release). On clean shutdown the server sends each command SIGTERM; if the server is killed abruptly (SIGKILL), commands are not signalled -- they exit on their own the next time they write to the closed pipe, but a command that ignores broken pipes can linger.
+
+---
+
 ## Discovery Tools
 
 ### list_logs
@@ -78,13 +119,15 @@ List all available `.log` files with metadata.
 
 **Example response:**
 ```
-[modified|name|size]
-2026-03-20T10:05:00Z|api.log|2.4 MB
-2026-03-20T09:30:00Z|worker.log|156 KB
-2026-03-20T08:12:00Z|gateway.log|4.1 MB
+[live|modified|name|path|size_bytes|source|status]
+true|2026-03-20T10:05:00|fly.log|/tmp/mcp-logs/fly.log|2411724|fly|running
+false|2026-03-20T09:30:00|worker.log|/tmp/mcp-logs/worker.log|159744||
+false|2026-03-20T08:12:00|gateway.log|/tmp/mcp-logs/gateway.log|4291456||
 ```
 
-**When to use:** First call to discover what log files are available in the configured log directory.
+`live: true` marks the ingest file of a declared [`LOG_SOURCES`](#streamed-sources-log_sources) stream, with its `source` name and worker `status` (`running` / `backing_off` / `dead`). Static files (including rotated `<name>.1.log` history) carry `live: false`.
+
+**When to use:** First call to discover what log files are available in the configured log directory, and to check the health of declared streamed sources.
 
 ---
 

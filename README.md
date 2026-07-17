@@ -231,6 +231,18 @@ Trace a request, session, or trace ID across every log file in one call:
 
 Returns a unified timeline sorted by timestamp, showing the request's path through gateway, API, worker, and any other service.
 
+### Streamed Sources (Fly, k8s, journald, Docker)
+
+Not all logs live in files. Declare streaming commands and the server tees them into rotating files under `LOG_DIR`, making remote production logs searchable, tailable, and correlatable with every tool above:
+
+```bash
+LOG_SOURCES='fly:cmd=flyctl logs -a my-app; k8s:cmd=kubectl logs -f deploy/api'
+```
+
+Each source gets a supervised worker: lines are tagged `[src:<name>] ` for cross-source attribution, files rotate before they exceed the size limit, and exited commands are respawned with exponential backoff (diagnostics on stderr only -- stdout stays pure JSON-RPC). `list_logs` shows each source as `live` with its worker status.
+
+> **Security note:** `LOG_SOURCES` executes arbitrary commands with the server's privileges -- the same trust level as the server's own launch command. Treat it like a startup script; never build it from untrusted input. See [Streamed Sources](docs/reference/TOOLS.md#streamed-sources-log_sources) for details.
+
 ### Severity Level Filtering
 
 Control what `get_errors` returns with the `level` parameter:
@@ -272,6 +284,9 @@ LOG_EXTRA_PATTERNS="circuit.breaker|deadline.exceeded" docker run ...
 | `LOG_DIR` | `/tmp/mcp-logs` | Directory containing `.log` files |
 | `MAX_LOG_FILE_MB` | `100` | Skip files larger than this (prevents memory issues) |
 | `LOG_RETENTION_DAYS` | _(none)_ | Auto-delete logs older than N days on startup |
+| `LOG_SOURCES` | _(none)_ | Streamed sources to ingest: `name:cmd=command` entries separated by `;` |
+| `LOG_SOURCE_ROTATE_MB` | `MAX_LOG_FILE_MB` | Rotate a streamed source's file before it exceeds this size |
+| `LOG_SOURCE_ROTATIONS` | `3` | Rotated files kept per streamed source |
 | `LOG_EXTRA_PATTERNS` | _(none)_ | Additional error patterns (pipe-separated regex) |
 | `LOG_ERROR_PATTERNS` | _(none)_ | Override default error patterns |
 | `LOG_WARN_PATTERNS` | _(none)_ | Override default warn patterns |
