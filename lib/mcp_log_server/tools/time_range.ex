@@ -11,7 +11,11 @@ defmodule McpLogServer.Tools.TimeRange do
 
   @impl true
   def description,
-    do: "Get the earliest and latest timestamps in a log file, plus the time span. Works with plain text and JSON logs."
+    do:
+      "Get the earliest and latest timestamps in a log file, plus the time span. Works with plain text and JSON logs. " <>
+        "Also reports ts_parse_ratio/ts_parse_sample over the sampled lines. " <>
+        "A low ratio means since/until filters on this file are unreliable (fail-open includes unparseable lines); " <>
+        "declare the file's format via LOG_TS_FORMATS to fix it."
 
   @impl true
   def schema do

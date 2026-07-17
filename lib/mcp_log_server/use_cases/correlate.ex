@@ -7,6 +7,7 @@ defmodule McpLogServer.UseCases.Correlate do
   alias McpLogServer.Domain.Correlator
   alias McpLogServer.Ports.LogSource
   alias McpLogServer.UseCases.Deps
+  alias McpLogServer.UseCases.TsOpts
 
   @default_max_results 200
 
@@ -31,7 +32,7 @@ defmodule McpLogServer.UseCases.Correlate do
     all_entries =
       Enum.flat_map(files, fn file_info ->
         case source.resolve(log_dir, file_info.name) do
-          {:ok, handle} -> search_one(source, handle, file_info.name, value, field)
+          {:ok, handle} -> search_one(source, handle, file_info.name, value, field, opts)
           {:error, _} -> []
         end
       end)
@@ -46,27 +47,35 @@ defmodule McpLogServer.UseCases.Correlate do
       |> Enum.map(& &1.file)
       |> Enum.uniq()
 
+    # Matched entries whose timestamp could not be parsed cannot be placed
+    # in the timeline order (they sort last) — surface the count instead of
+    # failing silently.
+    unparsed_ts = Enum.count(capped, &is_nil(&1.timestamp))
+
     {:ok,
      %{
        value: value,
        field: field,
        total_matches: length(capped),
        files_matched: files_matched,
-       timeline: capped
+       timeline: capped,
+       unparsed_ts: unparsed_ts
      }}
   end
 
-  defp search_one(source, handle, basename, value, field) do
+  defp search_one(source, handle, basename, value, field, opts) do
     case source.format(handle) do
       fmt when fmt in [:json_lines, :json_array] ->
         LogSource.stream_entries(source, handle, fmt)
         |> Correlator.json_timeline(basename, value, field)
 
       :plain ->
+        ts_opts = TsOpts.build(source, handle, basename, opts)
+
         handle
         |> source.stream_lines()
         |> Stream.with_index(1)
-        |> Correlator.plain_timeline(basename, value, field)
+        |> Correlator.plain_timeline(basename, value, field, ts_opts)
     end
   end
 end

@@ -60,6 +60,35 @@ defmodule McpLogServer.Domain.TimeFilterTest do
     end
   end
 
+  describe "classify/4" do
+    test "no bounds short-circuits without parsing" do
+      assert TimeFilter.classify("2026-03-20 12:00:00 INFO x", nil, nil) == {true, :no_filter}
+      assert TimeFilter.classify("no timestamp at all", nil, nil) == {true, :no_filter}
+    end
+
+    test "parsed timestamps report :parsed with the bounds verdict" do
+      assert TimeFilter.classify("2026-03-20 12:00:00 INFO in", @since, @until) ==
+               {true, :parsed}
+
+      assert TimeFilter.classify("2026-03-20 08:00:00 INFO out", @since, @until) ==
+               {false, :parsed}
+    end
+
+    test "unparseable timestamps are included and reported as :unparsed" do
+      assert TimeFilter.classify("no timestamp here", @since, @until) == {true, :unparsed}
+      assert TimeFilter.classify(%{"message" => "no ts"}, @since, @until) == {true, :unparsed}
+    end
+
+    test "declared format opts drive parsing" do
+      {:ok, epoch_s} = McpLogServer.Domain.TsFormat.compile("epoch_s")
+      # 2026-03-20T12:00:00Z
+      line = "1774008000 payload"
+
+      assert {true, :parsed} = TimeFilter.classify(line, @since, @until, format: epoch_s)
+      assert {true, :unparsed} = TimeFilter.classify(line, @since, @until)
+    end
+  end
+
   describe "in_range?/3 with nil bounds" do
     test "both nil always returns true" do
       assert TimeFilter.in_range?("anything", nil, nil) == true

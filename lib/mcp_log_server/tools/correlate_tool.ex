@@ -12,7 +12,10 @@ defmodule McpLogServer.Tools.CorrelateTool do
 
   @impl true
   def description,
-    do: "Search for a correlation ID (session ID, trace ID, request ID) across ALL log files. Returns a unified timeline sorted by timestamp."
+    do:
+      "Search for a correlation ID (session ID, trace ID, request ID) across ALL log files. " <>
+        "Returns a unified timeline sorted by timestamp. Matches whose timestamps cannot be parsed " <>
+        "are still included (fail-open) but sort last; the unparsed_ts count in the result reveals how many."
 
   @impl true
   def schema do

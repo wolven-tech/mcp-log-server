@@ -8,6 +8,7 @@ defmodule McpLogServer.UseCases.SearchLogs do
   alias McpLogServer.Domain.TimestampParser
   alias McpLogServer.Ports.LogSource
   alias McpLogServer.UseCases.Deps
+  alias McpLogServer.UseCases.TsOpts
 
   @doc """
   Search `file` for `pattern`.
@@ -33,17 +34,18 @@ defmodule McpLogServer.UseCases.SearchLogs do
     with {:ok, handle} <- source.resolve_readable(log_dir, file),
          {:ok, regex} <- LogSearch.compile_pattern(pattern) do
       file_name = Path.basename(file)
+      ts_opts = TsOpts.build(source, handle, file, opts)
 
       case {source.format(handle), field} do
         {fmt, field} when fmt in [:json_lines, :json_array] and field != nil ->
           LogSource.stream_entries(source, handle, fmt)
-          |> LogSearch.match_json_field(regex, pattern, field, file_name, max_results, since, until_dt)
+          |> LogSearch.match_json_field(regex, pattern, field, file_name, max_results, since, until_dt, ts_opts)
 
         _ ->
           handle
           |> source.stream_lines()
           |> Stream.with_index(1)
-          |> LogSearch.match_plain(regex, pattern, file_name, max_results, context_lines, since, until_dt)
+          |> LogSearch.match_plain(regex, pattern, file_name, max_results, context_lines, since, until_dt, ts_opts)
       end
     end
   end

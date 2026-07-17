@@ -32,12 +32,23 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
     ToonEncoder.format_response(%{entries: items})
   end
 
-  # :tail — raw content with a header line (tail_log)
-  def format(:tail, %{file: file, lines: lines, content: content}, format_opt) do
+  # :tail — raw content with a header line (tail_log). When a time filter
+  # was active, `unparsed_ts` (lines that passed the filter because their
+  # timestamp could not be parsed — fail-open) is appended to the header.
+  def format(:tail, %{file: file, lines: lines, content: content} = data, format_opt) do
+    unparsed_ts = Map.get(data, :unparsed_ts)
+
     if format_opt == "json" do
-      Jason.encode!(%{file: file, lines: lines, content: content})
+      payload = %{file: file, lines: lines, content: content}
+
+      payload =
+        if unparsed_ts != nil, do: Map.put(payload, :unparsed_ts, unparsed_ts), else: payload
+
+      Jason.encode!(payload)
     else
-      "# tail #{file} (last #{lines} lines)\n#{content}"
+      header = "# tail #{file} (last #{lines} lines)"
+      header = if unparsed_ts != nil, do: header <> "\n# unparsed_ts: #{unparsed_ts}", else: header
+      "#{header}\n#{content}"
     end
   end
 
@@ -64,7 +75,8 @@ defmodule McpLogServer.Protocol.ResponseFormatter do
       meta = Jason.encode!(%{
         value: result.value,
         total_matches: result.total_matches,
-        files_matched: result.files_matched
+        files_matched: result.files_matched,
+        unparsed_ts: Map.get(result, :unparsed_ts, 0)
       })
 
       toon = ToonEncoder.format_response(%{matches: result.timeline})

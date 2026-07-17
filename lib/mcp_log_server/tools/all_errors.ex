@@ -12,7 +12,11 @@ defmodule McpLogServer.Tools.AllErrors do
 
   @impl true
   def description,
-    do: "Get errors from ALL log files at once. Best first call for health overview. Always returns TOON format. Tip: Use JSON structured logs with a severity field to eliminate false positives — see docs/guides/LOG_STRUCTURING.md."
+    do:
+      "Get errors from ALL log files at once. Best first call for health overview. Always returns TOON format. " <>
+        "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since; " <>
+        "the unparsed_ts count in the result reveals when filtering was degraded this way. " <>
+        "Tip: Use JSON structured logs with a severity field to eliminate false positives — see docs/guides/LOG_STRUCTURING.md."
 
   @impl true
   def schema do
@@ -45,7 +49,7 @@ defmodule McpLogServer.Tools.AllErrors do
     end
     opts = maybe_add_time_opts(opts, args)
 
-    {:ok, %{results: results, skipped: skipped}} =
+    {:ok, %{results: results, skipped: skipped, unparsed_ts: unparsed_ts}} =
       UseCases.AllErrors.run(log_dir, lines_per_file, opts)
 
     output = ResponseFormatter.format(:multi_file_errors, results)
@@ -53,6 +57,13 @@ defmodule McpLogServer.Tools.AllErrors do
     output =
       if skipped != [] do
         output <> "\n\n" <> Enum.join(skipped, "\n")
+      else
+        output
+      end
+
+    output =
+      if unparsed_ts != nil do
+        output <> "\n\n# unparsed_ts: #{unparsed_ts}"
       else
         output
       end

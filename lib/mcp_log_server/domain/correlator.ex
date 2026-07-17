@@ -26,7 +26,8 @@ defmodule McpLogServer.Domain.Correlator do
           field: String.t() | nil,
           total_matches: non_neg_integer(),
           files_matched: [String.t()],
-          timeline: [timeline_entry()]
+          timeline: [timeline_entry()],
+          unparsed_ts: non_neg_integer()
         }
 
   @doc """
@@ -55,10 +56,14 @@ defmodule McpLogServer.Domain.Correlator do
   @doc """
   Build timeline entries from an enumerable of `{line, index}` tuples that
   match the correlation `value` (optionally as `field=value` / `field: value`).
+
+  `ts_opts` (declared format, mtime reference) are forwarded to the
+  timestamp parser; entries whose timestamp cannot be parsed carry
+  `timestamp: nil` and sort last in the timeline.
   """
-  @spec plain_timeline(Enumerable.t(), String.t(), String.t(), String.t() | nil) ::
+  @spec plain_timeline(Enumerable.t(), String.t(), String.t(), String.t() | nil, keyword()) ::
           [timeline_entry()]
-  def plain_timeline(indexed_lines, basename, value, field) do
+  def plain_timeline(indexed_lines, basename, value, field, ts_opts \\ []) do
     escaped = Regex.escape(value)
 
     regex =
@@ -74,7 +79,7 @@ defmodule McpLogServer.Domain.Correlator do
     indexed_lines
     |> Stream.filter(fn {line, _idx} -> Regex.match?(regex, line) end)
     |> Enum.map(fn {line, idx} ->
-      ts = TimestampParser.extract(line)
+      ts = TimestampParser.extract(line, ts_opts)
 
       %{
         file: basename,

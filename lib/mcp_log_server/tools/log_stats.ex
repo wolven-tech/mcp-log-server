@@ -11,7 +11,11 @@ defmodule McpLogServer.Tools.LogStats do
 
   @impl true
   def description,
-    do: "Get stats: line count, error count, warn count, file size. Auto-detects JSON format and uses severity field for accurate counting."
+    do:
+      "Get stats: line count, error count, warn count, file size. Auto-detects JSON format and uses severity field for accurate counting. " <>
+        "Also reports ts_parse_ratio/ts_parse_sample — the sampled share of lines with parseable timestamps. " <>
+        "A low ratio means since/until filters on this file are unreliable (fail-open includes unparseable lines); " <>
+        "declare the file's format via LOG_TS_FORMATS to fix it."
 
   @impl true
   def schema do

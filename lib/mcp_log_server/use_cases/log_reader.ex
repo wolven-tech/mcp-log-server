@@ -40,7 +40,12 @@ defmodule McpLogServer.UseCases.LogReader do
   @doc "Return the last `n` lines of a log file."
   @spec tail(String.t(), String.t(), pos_integer(), keyword()) ::
           {:ok, String.t()} | {:error, String.t()}
-  def tail(log_dir, file, n, opts \\ []), do: UseCases.TailLog.run(log_dir, file, n, opts)
+  def tail(log_dir, file, n, opts \\ []) do
+    case UseCases.TailLog.run(log_dir, file, n, opts) do
+      {:ok, %{content: content}} -> {:ok, content}
+      error -> error
+    end
+  end
 
   @doc "Search a log file for lines matching a regex pattern."
   @spec search(String.t(), String.t(), String.t(), keyword()) ::
@@ -51,8 +56,12 @@ defmodule McpLogServer.UseCases.LogReader do
   @doc "Extract error/warning lines from a log file."
   @spec get_errors(String.t(), String.t(), pos_integer(), keyword()) ::
           {:ok, [log_entry()]} | {:error, String.t()}
-  def get_errors(log_dir, file, max_lines, opts \\ []),
-    do: UseCases.GetErrors.run(log_dir, file, max_lines, opts)
+  def get_errors(log_dir, file, max_lines, opts \\ []) do
+    case UseCases.GetErrors.run(log_dir, file, max_lines, opts) do
+      {:ok, %{entries: entries}} -> {:ok, entries}
+      error -> error
+    end
+  end
 
   @doc "Compute stats for a log file without returning its content."
   @spec get_stats(String.t(), String.t()) :: {:ok, file_stats()} | {:error, String.t()}

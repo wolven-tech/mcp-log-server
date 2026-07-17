@@ -36,50 +36,74 @@ defmodule McpLogServer.Domain.ErrorExtractor do
     - `:error` — ERROR and FATAL
     - `:warn`  — WARN, ERROR, and FATAL
     - `:info`  — INFO and above
+
+  Returns `{:ok, %{entries: entries, unparsed_ts: n | nil}}` where
+  `unparsed_ts` counts scanned lines whose timestamp could not be parsed
+  while a time filter was active (they pass the filter — fail-open). It is
+  `nil` when no time filter was applied (zero cost).
   """
   @spec filter_plain(Enumerable.t(), pos_integer(), atom(), Regex.t() | nil,
-          DateTime.t() | nil, DateTime.t() | nil) :: {:ok, [log_entry()]}
-  def filter_plain(indexed_lines, max_lines, level, exclude_regex, since, until_dt) do
-    errors =
-      indexed_lines
-      |> Stream.filter(fn {line, _idx} ->
-        TimeFilter.in_range?(line, since, until_dt) and
-          Patterns.matches_level?(line, level) and
-          not excluded?(line, exclude_regex)
-      end)
-      |> Enum.take(-max_lines)
-      |> Enum.map(fn {line, idx} -> %{line_number: idx, content: line} end)
+          DateTime.t() | nil, DateTime.t() | nil, keyword()) ::
+          {:ok, %{entries: [log_entry()], unparsed_ts: non_neg_integer() | nil}}
+  def filter_plain(indexed_lines, max_lines, level, exclude_regex, since, until_dt, ts_opts \\ []) do
+    filter_active? = since != nil or until_dt != nil
 
-    {:ok, errors}
+    {kept, unparsed} =
+      Enum.reduce(indexed_lines, {[], 0}, fn {line, idx}, {acc, unparsed} ->
+        {included?, status} = TimeFilter.classify(line, since, until_dt, ts_opts)
+        unparsed = if status == :unparsed, do: unparsed + 1, else: unparsed
+
+        acc =
+          if included? and Patterns.matches_level?(line, level) and
+               not excluded?(line, exclude_regex) do
+            [%{line_number: idx, content: line} | acc]
+          else
+            acc
+          end
+
+        {acc, unparsed}
+      end)
+
+    entries = kept |> Enum.reverse() |> Enum.take(-max_lines)
+    {:ok, %{entries: entries, unparsed_ts: if(filter_active?, do: unparsed, else: nil)}}
   end
 
   @doc """
   Filter an enumerable of `{enriched_json_entry, index}` tuples down to
   error entries, using the entry's extracted `_severity`.
+
+  Same result shape and `unparsed_ts` semantics as `filter_plain/7`.
   """
   @spec filter_json(Enumerable.t(), pos_integer(), atom(), Regex.t() | nil,
-          DateTime.t() | nil, DateTime.t() | nil) :: {:ok, [map()]}
-  def filter_json(entries, max_lines, level, exclude_regex, since, until_dt) do
+          DateTime.t() | nil, DateTime.t() | nil, keyword()) ::
+          {:ok, %{entries: [map()], unparsed_ts: non_neg_integer() | nil}}
+  def filter_json(entries, max_lines, level, exclude_regex, since, until_dt, ts_opts \\ []) do
     threshold = Patterns.level_value(level)
+    filter_active? = since != nil or until_dt != nil
+
+    severity_match? = fn entry ->
+      atom_level = Map.get(@json_severity_to_atom, entry["_severity"])
+
+      atom_level != nil and
+        Patterns.level_value(atom_level) >= threshold and
+        not excluded?(entry["_message"] || "", exclude_regex)
+    end
+
+    {kept, unparsed} =
+      Enum.reduce(entries, {[], 0}, fn {entry, idx}, {acc, unparsed} ->
+        {included?, status} = TimeFilter.classify(entry, since, until_dt, ts_opts)
+        unparsed = if status == :unparsed, do: unparsed + 1, else: unparsed
+        acc = if included? and severity_match?.(entry), do: [{entry, idx} | acc], else: acc
+        {acc, unparsed}
+      end)
 
     errors =
-      entries
-      |> Stream.filter(fn {entry, _idx} ->
-        severity = entry["_severity"]
-        atom_level = Map.get(@json_severity_to_atom, severity)
-
-        TimeFilter.in_range?(entry, since, until_dt) and
-          atom_level != nil and
-          Patterns.level_value(atom_level) >= threshold and
-          not excluded?(entry["_message"] || "", exclude_regex)
-      end)
-      |> Enum.to_list()
+      kept
+      |> Enum.reverse()
       |> Enum.take(-max_lines)
-      |> Enum.map(fn {entry, idx} ->
-        JsonLogParser.json_entry_to_toon_map(entry, idx)
-      end)
+      |> Enum.map(fn {entry, idx} -> JsonLogParser.json_entry_to_toon_map(entry, idx) end)
 
-    {:ok, errors}
+    {:ok, %{entries: errors, unparsed_ts: if(filter_active?, do: unparsed, else: nil)}}
   end
 
   @doc "Compile an optional exclusion regex. `nil` compiles to no filter."

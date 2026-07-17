@@ -12,7 +12,10 @@ defmodule McpLogServer.Tools.SearchLogs do
 
   @impl true
   def description,
-    do: "Search log file for a regex pattern. Returns matching lines with line numbers."
+    do:
+      "Search log file for a regex pattern. Returns matching lines with line numbers. " <>
+        "Time filtering is fail-open: lines with unparseable timestamps are NOT excluded by since/until; " <>
+        "the unparsed_ts count in the result reveals when filtering was degraded this way."
 
   @impl true
   def schema do

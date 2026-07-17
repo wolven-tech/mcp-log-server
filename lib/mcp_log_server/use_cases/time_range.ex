@@ -6,6 +6,7 @@ defmodule McpLogServer.UseCases.TimeRange do
 
   alias McpLogServer.Domain.TimeRangeCalc
   alias McpLogServer.UseCases.Deps
+  alias McpLogServer.UseCases.TsOpts
 
   @spec run(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, String.t()}
   def run(log_dir, file, opts \\ []) do
@@ -13,10 +14,11 @@ defmodule McpLogServer.UseCases.TimeRange do
 
     with {:ok, handle} <- source.resolve_readable(log_dir, file) do
       format = source.format(handle)
+      ts_opts = TsOpts.build(source, handle, file, opts)
 
       handle
       |> source.stream_lines()
-      |> TimeRangeCalc.compute(format, Path.basename(file))
+      |> TimeRangeCalc.compute(format, Path.basename(file), ts_opts)
     end
   end
 end

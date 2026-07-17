@@ -6,6 +6,12 @@ defmodule McpLogServer.Domain.LogSearch do
   All functions operate on enumerables supplied by the caller; I/O lives in
   the application layer (`McpLogServer.UseCases.SearchLogs`) and behind the
   `LogSource` port.
+
+  When a time filter is active, results carry an `unparsed_ts` count — the
+  number of scanned lines whose timestamp could not be parsed. Those lines
+  pass the filter (fail-open), and the counter makes that degradation
+  observable instead of silent. The counter is returned as data, never as a
+  side effect, and costs nothing when no time filter is applied.
   """
 
   alias McpLogServer.Domain.JsonLogParser
@@ -13,29 +19,39 @@ defmodule McpLogServer.Domain.LogSearch do
 
   @type log_entry :: %{line_number: pos_integer(), content: String.t()}
   @type search_result :: %{
-          file: String.t(),
-          pattern: String.t(),
-          returned_matches: non_neg_integer(),
-          matches: [log_entry()]
+          required(:file) => String.t(),
+          required(:pattern) => String.t(),
+          required(:returned_matches) => non_neg_integer(),
+          required(:matches) => [log_entry()],
+          optional(:unparsed_ts) => non_neg_integer()
         }
 
   @doc """
   Search an enumerable of `{line, index}` tuples for regex matches.
 
   `file_name` is only echoed into the result map. Context lines require the
-  full line list, so the input is materialized.
+  full line list, so the input is materialized. `ts_opts` (declared format,
+  mtime reference) are forwarded to the time filter.
   """
   @spec match_plain(Enumerable.t(), Regex.t(), String.t(), String.t(),
-          non_neg_integer(), non_neg_integer(), DateTime.t() | nil, DateTime.t() | nil) ::
-          {:ok, search_result()}
-  def match_plain(indexed_lines, regex, pattern, file_name, max_results, context_lines, since, until_dt) do
+          non_neg_integer(), non_neg_integer(), DateTime.t() | nil, DateTime.t() | nil,
+          keyword()) :: {:ok, search_result()}
+  def match_plain(indexed_lines, regex, pattern, file_name, max_results, context_lines, since, until_dt, ts_opts \\ []) do
     lines = Enum.to_list(indexed_lines)
+    filter_active? = since != nil or until_dt != nil
+
+    {in_range, unparsed} =
+      Enum.reduce(lines, {[], 0}, fn {line, idx}, {acc, unparsed} ->
+        {included?, status} = TimeFilter.classify(line, since, until_dt, ts_opts)
+        unparsed = if status == :unparsed, do: unparsed + 1, else: unparsed
+        acc = if included?, do: [{line, idx} | acc], else: acc
+        {acc, unparsed}
+      end)
 
     matches =
-      lines
-      |> Enum.filter(fn {line, _idx} ->
-        TimeFilter.in_range?(line, since, until_dt) and Regex.match?(regex, line)
-      end)
+      in_range
+      |> Enum.reverse()
+      |> Enum.filter(fn {line, _idx} -> Regex.match?(regex, line) end)
       |> Enum.take(max_results)
       |> Enum.map(fn {line, idx} ->
         entry = %{line_number: idx, content: line}
@@ -54,13 +70,15 @@ defmodule McpLogServer.Domain.LogSearch do
         end
       end)
 
-    {:ok,
-     %{
-       file: file_name,
-       pattern: pattern,
-       returned_matches: length(matches),
-       matches: matches
-     }}
+    result = %{
+      file: file_name,
+      pattern: pattern,
+      returned_matches: length(matches),
+      matches: matches
+    }
+
+    result = if filter_active?, do: Map.put(result, :unparsed_ts, unparsed), else: result
+    {:ok, result}
   end
 
   @doc """
@@ -68,31 +86,55 @@ defmodule McpLogServer.Domain.LogSearch do
   matches on a specific (dot-notation) field.
   """
   @spec match_json_field(Enumerable.t(), Regex.t(), String.t(), String.t(), String.t(),
-          non_neg_integer(), DateTime.t() | nil, DateTime.t() | nil) :: {:ok, search_result()}
-  def match_json_field(entries, regex, pattern, field, file_name, max_results, since, until_dt) do
+          non_neg_integer(), DateTime.t() | nil, DateTime.t() | nil, keyword()) ::
+          {:ok, search_result()}
+  def match_json_field(entries, regex, pattern, field, file_name, max_results, since, until_dt, ts_opts \\ []) do
     keys = String.split(field, ".")
+    filter_active? = since != nil or until_dt != nil
+    field_match? = fn entry ->
+      value = get_in(entry, keys)
+      value != nil and Regex.match?(regex, to_string(value))
+    end
 
-    matches =
-      entries
-      |> Stream.filter(fn {entry, _idx} ->
-        value = get_in(entry, keys)
+    if filter_active? do
+      {matched, unparsed} =
+        Enum.reduce(entries, {[], 0}, fn {entry, idx}, {acc, unparsed} ->
+          {included?, status} = TimeFilter.classify(entry, since, until_dt, ts_opts)
+          unparsed = if status == :unparsed, do: unparsed + 1, else: unparsed
+          acc = if included? and field_match?.(entry), do: [{entry, idx} | acc], else: acc
+          {acc, unparsed}
+        end)
 
-        TimeFilter.in_range?(entry, since, until_dt) and
-          value != nil and
-          Regex.match?(regex, to_string(value))
-      end)
-      |> Enum.take(max_results)
-      |> Enum.map(fn {entry, idx} ->
-        JsonLogParser.json_entry_to_toon_map(entry, idx)
-      end)
+      matches =
+        matched
+        |> Enum.reverse()
+        |> Enum.take(max_results)
+        |> Enum.map(fn {entry, idx} -> JsonLogParser.json_entry_to_toon_map(entry, idx) end)
 
-    {:ok,
-     %{
-       file: file_name,
-       pattern: pattern,
-       returned_matches: length(matches),
-       matches: matches
-     }}
+      {:ok,
+       %{
+         file: file_name,
+         pattern: pattern,
+         returned_matches: length(matches),
+         matches: matches,
+         unparsed_ts: unparsed
+       }}
+    else
+      # No time filter: keep the lazy early-stop path (zero parse cost).
+      matches =
+        entries
+        |> Stream.filter(fn {entry, _idx} -> field_match?.(entry) end)
+        |> Enum.take(max_results)
+        |> Enum.map(fn {entry, idx} -> JsonLogParser.json_entry_to_toon_map(entry, idx) end)
+
+      {:ok,
+       %{
+         file: file_name,
+         pattern: pattern,
+         returned_matches: length(matches),
+         matches: matches
+       }}
+    end
   end
 
   @doc "Compile a regex pattern (case-insensitive)."
