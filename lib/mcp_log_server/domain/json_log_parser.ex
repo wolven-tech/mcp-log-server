@@ -71,6 +71,36 @@ defmodule McpLogServer.Domain.JsonLogParser do
     end
   end
 
+  @doc """
+  Stream enriched JSON entries from an enumerable of (already trimmed) lines.
+
+  Returns a stream of `{enriched_map, line_number}` tuples. Lines that do not
+  decode to a JSON object are skipped but still consume a line number.
+  Pure over its input: the enumerable may be a lazy file stream supplied by
+  an infrastructure adapter or a plain list in tests.
+  """
+  @spec stream_from_lines(Enumerable.t()) :: Enumerable.t()
+  def stream_from_lines(lines) do
+    lines
+    |> Stream.with_index(1)
+    |> Stream.flat_map(fn {line, idx} ->
+      case Jason.decode(line) do
+        {:ok, map} when is_map(map) -> [{enrich(map), idx}]
+        _ -> []
+      end
+    end)
+  end
+
+  @doc """
+  Parse a raw log file content string into a list of enriched JSON maps.
+
+  `format` must be `:json_lines` or `:json_array`. See `parse_entries/2` for
+  the shape of the returned maps.
+  """
+  @spec parse_string(String.t(), :json_lines | :json_array) ::
+          {:ok, [map()]} | {:error, String.t()}
+  def parse_string(content, format), do: parse_content(content, format)
+
   defp parse_content(content, :json_lines) do
     entries =
       content

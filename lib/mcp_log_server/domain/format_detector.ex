@@ -49,6 +49,49 @@ defmodule McpLogServer.Domain.FormatDetector do
     end
   end
 
+  @doc "Returns true if a sampled first line suggests a JSON array file."
+  @spec array_candidate?(String.t()) :: boolean()
+  def array_candidate?(first_line) do
+    first_line
+    |> String.trim()
+    |> String.starts_with?("[")
+  end
+
+  @doc """
+  Classify a sample of trimmed, non-empty lines as `:json_lines` or `:plain`.
+
+  Returns `:json_lines` only when every sampled line decodes to a JSON object.
+  An empty sample is `:plain`.
+  """
+  @spec classify_lines([String.t()]) :: format()
+  def classify_lines(lines), do: detect_json_lines(lines)
+
+  @doc """
+  Classify the leading chunk of an array-candidate file.
+
+  Returns `:json_array` when the (possibly truncated) chunk parses as a JSON
+  array of objects, `:plain` otherwise.
+  """
+  @spec classify_array_chunk(binary()) :: format()
+  def classify_array_chunk(data) when is_binary(data) do
+    trimmed = String.trim(data)
+
+    case Jason.decode(trimmed) do
+      {:ok, list} when is_list(list) ->
+        if Enum.all?(list, &is_map/1), do: :json_array, else: :plain
+
+      _ ->
+        # Possibly truncated — try appending "]"
+        case Jason.decode(trimmed <> "]") do
+          {:ok, list} when is_list(list) ->
+            if Enum.all?(list, &is_map/1), do: :json_array, else: :plain
+
+          _ ->
+            :plain
+        end
+    end
+  end
+
   @sample_lines 5
   @chunk_size 4096
 
