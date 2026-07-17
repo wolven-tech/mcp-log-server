@@ -76,4 +76,50 @@ defmodule McpLogServer.Tools.CorrelateToolTest do
       assert is_list(result["timeline"])
     end
   end
+
+  describe "correlate tool anchor mode" do
+    test "anchor returns window sections with a merged timeline" do
+      args = %{"anchor" => %{"pattern" => "Auth failed", "window" => "±5s"}}
+      {:ok, output} = Dispatcher.call("correlate", args, @tmp_dir)
+
+      assert output =~ "== window "
+      assert output =~ "total_anchors"
+      # the ±5s neighbourhood pulls in surrounding cross-source lines
+      assert output =~ "Request in"
+      assert output =~ "Job started"
+      assert output =~ "Processing sessionId=abc-123"
+    end
+
+    test "anchor mode as JSON" do
+      args = %{
+        "anchor" => %{"pattern" => "Auth failed", "before" => "1s", "after" => "3s"},
+        "format" => "json"
+      }
+
+      {:ok, output} = Dispatcher.call("correlate", args, @tmp_dir)
+      result = Jason.decode!(output)
+
+      assert result["anchor"] == "Auth failed"
+      assert result["window"] == "-1s/+3s"
+      assert [section] = result["sections"]
+      assert section["anchor_count"] == 1
+      assert is_list(section["entries"])
+    end
+
+    test "value and anchor together is a validation error" do
+      args = %{"value" => "abc-123", "anchor" => %{"pattern" => "x"}}
+      assert {:error, msg} = Dispatcher.call("correlate", args, @tmp_dir)
+      assert msg =~ "mutually exclusive"
+    end
+
+    test "neither value nor anchor is a validation error" do
+      assert {:error, msg} = Dispatcher.call("correlate", %{}, @tmp_dir)
+      assert msg =~ "either value" and msg =~ "anchor"
+    end
+
+    test "anchor without pattern is a validation error" do
+      assert {:error, msg} = Dispatcher.call("correlate", %{"anchor" => %{}}, @tmp_dir)
+      assert msg =~ "anchor.pattern is required"
+    end
+  end
 end
