@@ -5,6 +5,9 @@ defmodule McpLogServer.Domain.TimestampParser do
 
   ANSI color escape sequences (`\\e[...m`) are stripped before matching, so
   colorized dev-server output (Vite, webpack, etc.) parses like plain text.
+  Source tags (`[src:<name>] ` prefixes written by streamed `LOG_SOURCES`
+  ingestion, see `McpLogServer.Domain.SourceTag`) are stripped the same way,
+  so tagged lines parse exactly like their untagged originals.
 
   ## Time-only formats and the midnight-rollover rule
 
@@ -25,6 +28,7 @@ defmodule McpLogServer.Domain.TimestampParser do
   used — correct for the common case of a still-growing dev-server log.
   """
 
+  alias McpLogServer.Domain.SourceTag
   alias McpLogServer.Domain.TsFormat
 
   # ANSI SGR escape sequences: \e[...m
@@ -87,7 +91,7 @@ defmodule McpLogServer.Domain.TimestampParser do
   """
   @spec extract(String.t(), keyword()) :: DateTime.t() | nil
   def extract(line, opts \\ []) when is_binary(line) do
-    line = strip_ansi(line)
+    line = line |> strip_ansi() |> SourceTag.strip()
     reference = Keyword.get(opts, :reference)
 
     case Keyword.get(opts, :format) do
