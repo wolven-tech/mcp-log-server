@@ -11,7 +11,7 @@ tags: [reference, api, tools]
 
 # Tool Reference
 
-MCP Log Server exposes 9 tools via the MCP `tools/call` method. All tools return results as MCP text content.
+MCP Log Server exposes 11 tools via the MCP `tools/call` method. All tools return results as MCP text content.
 
 ---
 
@@ -23,7 +23,10 @@ A typical investigation follows this sequence:
 2. **`log_stats`** or **`time_range`** -- Understand the scope of a specific file (line counts, error counts, time span).
 3. **`get_errors`** with `level`/`since` -- Targeted investigation of a single file, filtering by severity and time window.
 4. **`search_logs`** with `field`/`context` -- Deep dive into specific patterns, optionally scoped to a JSON field.
-5. **`correlate`** -- Cross-service tracing using a request ID, session ID, or trace ID to build a unified timeline.
+5. **`aggregate`** -- Prove structured-field presence/absence or group by a JSON field (`op: exists` / `values` / `count`).
+6. **`correlate`** -- Cross-service tracing using a request ID, session ID, or trace ID — or, when you only have a symptom line, an `anchor` regex whose matches become time windows.
+
+Watching something in progress (a deploy, a restart loop)? `tail_log` and `search_logs` return an opaque **`cursor`** — pass it back to receive only lines appended since the last call.
 
 ---
 
@@ -79,7 +82,53 @@ omissions: {
 - **Zero noise:** the block is entirely absent when nothing was bounded — never `omitted: 0` — so complete results are unchanged.
 - The oversized-file skip appears in the results of every multi-file scan that would have included the file (`all_errors`, rollup-mode `search_logs`). Single-file tools refuse oversized files with an explicit error instead.
 
-Bounds reported per tool: `search_logs` (`max_results`), `get_errors` (`lines`), `tail_log` (`lines`), `all_errors` (per-file `lines` + skipped files), `correlate` (`max_results`), `trace_ids` (`max_values`).
+Bounds reported per tool: `search_logs` (`max_results`), `get_errors` (`lines`), `tail_log` (`lines`), `all_errors` (per-file `lines` + skipped files), `correlate` (`max_results`; anchor mode also `max_sections`), `trace_ids` (`max_values`), `aggregate` (`max_values` for the histogram + skipped files).
+
+---
+
+## Cursors: Polling Without Re-Reading
+
+Tailing an in-progress deploy by re-fetching the same window every few seconds is pure token waste for the consuming agent. `tail_log` and `search_logs` therefore return an opaque **`cursor`** string with every (line-oriented) result. Pass it back on the next call to receive **only lines appended since**, plus a fresh cursor.
+
+- **Opaque by design:** the cursor encodes file identity + byte offset + a rotation guard (a hash of the file's first bytes). The encoding is versioned and free to change — never parse or construct one.
+- **Rotation/truncation safety:** if the file shrank, was rotated, or was replaced, the cursor is invalid. The tool then returns a **flagged full window** with `cursor_reset: true` instead of wrong increments — you always know when your incremental view restarted.
+- Cursors never contain absolute paths — only the file's name within `LOG_DIR`.
+- A cursor from `tail_log` works in `search_logs` on the same file (and vice versa).
+- `search_logs` restrictions: `cursor` cannot be combined with `field` (JSON field search) or `rollup`.
+- A trailing line still being written (no newline yet) is returned as-is but not covered by the cursor, so the completed line is re-delivered on the next poll.
+
+**The deploy-watch loop:**
+
+```json
+{"name": "tail_log", "arguments": {"file": "deploy.log", "lines": 50}}
+```
+```
+# tail deploy.log (last 50 lines)
+# cursor: g2gFYQFtAAAACmRlcGxveS5sb2dhKWEpYgALeg8
+release v1 starting
+health check pending
+```
+
+Next poll — pass the cursor back; only new lines come back:
+
+```json
+{"name": "tail_log", "arguments": {"file": "deploy.log", "cursor": "g2gFYQFtAAAACmRlcGxveS5sb2dhKWEpYgALeg8"}}
+```
+```
+# tail deploy.log (last 50 lines)
+# cursor: g2gFYQFtAAAACmRlcGxveS5sb2dhT2FPYgUgKwI
+instances rolling
+health check passed
+```
+
+If the deploy rotated the file between polls:
+
+```
+# tail deploy.log (last 50 lines)
+# cursor_reset: true
+# cursor: ...
+<full window of the new file>
+```
 
 ---
 
@@ -277,6 +326,7 @@ Get the last N lines from a log file, optionally filtered to a time window.
 | `file` | string | Yes | -- | Log file name (e.g., `api.log`) |
 | `lines` | integer | No | 50 | Number of lines to return |
 | `since` | string | No | -- | Only include lines from this time onward. ISO 8601 or relative shorthand (e.g. `30m`, `2h`, `1d`) |
+| `cursor` | string | No | -- | Opaque cursor from a previous call; returns only lines appended since (see [Cursors](#cursors-polling-without-re-reading)) |
 | `format` | string | No | toon | Output format: `toon` or `json` |
 
 **Example request:**
@@ -304,7 +354,9 @@ When `since` is active, the `# unparsed_ts: N` header line counts scanned lines 
 
 When the file holds more (post-filter) lines than requested, a `# omissions: {"lines":{"omitted":240,"showing":"newest 100"}}` header line reports the withheld older lines -- absent when everything fit. See [Omissions](#omissions-never-truncate-silently).
 
-**When to use:** See the most recent log output from a specific file, optionally narrowed to a recent time window.
+Every result carries a `# cursor: ...` header line (a `cursor` key in JSON format). Pass it back to receive only lines appended since; after rotation/truncation the result is a full window flagged `# cursor_reset: true`. See [Cursors](#cursors-polling-without-re-reading).
+
+**When to use:** See the most recent log output from a specific file, optionally narrowed to a recent time window. With `cursor`, poll a live deploy without re-reading lines already ingested.
 
 ---
 
@@ -324,6 +376,7 @@ Search a log file using a regex pattern. Returns matching lines with line number
 | `rollup` | boolean | No | false | Collapse matches into [message templates](#rollup-mode-did-x-happen-on-how-many-instances-when) with `count`, `instances_seen`, `first_ts`/`last_ts` |
 | `since` | string | No | -- | Only include lines from this time onward. ISO 8601 or relative shorthand (e.g. `30m`, `2h`) |
 | `until` | string | No | -- | Only include lines up to this time. ISO 8601 or relative shorthand |
+| `cursor` | string | No | -- | Opaque cursor from a previous call; searches only lines appended since. Incompatible with `field` and `rollup` (see [Cursors](#cursors-polling-without-re-reading)) |
 | `format` | string | No | toon | Output format: `toon` or `json` |
 
 **Example request:**
@@ -382,6 +435,8 @@ When the `max_results` cap was actually hit, the metadata carries an [`omissions
   }
 }
 ```
+
+Line searches also return a `cursor` in the metadata; pass it back to search only lines appended since the previous call — watching for a specific error during a deploy without rescanning the file. `cursor_reset: true` in the metadata flags a full re-window after rotation/truncation. See [Cursors](#cursors-polling-without-re-reading).
 
 **When to use:** Find specific patterns, error messages, or keywords in logs. Use `field` to avoid false matches in JSON logs and `since`/`until` to narrow the time window.
 
@@ -495,19 +550,94 @@ With `rollup: true`, the per-file listing is replaced by message-template rows (
 
 ---
 
+### aggregate
+
+Aggregate/facet on a JSON field (dot-path) across one log file or ALL files. This is the tool for structured-field questions that regex cannot answer cheaply: proving a field's presence or absence, or grouping by its values.
+
+**Ops:**
+
+- `exists` -- "did ANY line emit this field?" Returns `lines_with_field` / `lines_without` plus one `sample` matching line. Turns "did any line emit `gated`?" into one deterministic query — a present key holding JSON `null` still counts as present.
+- `values` -- histogram of distinct values with counts, sorted by count. Distinct values are capped (`max_values`); a hit cap is reported in `omissions.values`.
+- `count` -- total occurrences of the field.
+
+**Honesty:** lines that are not JSON objects can never prove field absence — they are counted separately as `non_json`, not silently ignored. A fully plain-text file reports everything under `non_json` and zero under `lines_without`. With `since`/`until` active, `unparsed_ts` is reported as usual (fail-open). Files skipped by the size guardrail in an all-files scan appear in `omissions.skipped_files`.
+
+**Parameters:**
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `field` | string | Yes | -- | Dot-path into parsed JSON lines (e.g. `fields.region`). Numeric segments index arrays (`items.0.id`) |
+| `op` | string | Yes | -- | `exists`, `values`, or `count` |
+| `file` | string | No | -- | Log file name. Omit to scan ALL log files |
+| `pattern` | string | No | -- | Regex pre-filter (case-insensitive) — only matching lines are aggregated |
+| `max_values` | integer | No | 50 | Cap on distinct values for `op: values` |
+| `since` | string | No | -- | Only include lines from this time onward. ISO 8601 or relative shorthand |
+| `until` | string | No | -- | Only include lines up to this time. ISO 8601 or relative shorthand |
+| `format` | string | No | toon | Output format: `toon` or `json` |
+
+**Example request (the incident question — "did the gate ever fire?"):**
+```json
+{
+  "name": "aggregate",
+  "arguments": {
+    "file": "app.log",
+    "field": "fields.gated",
+    "op": "exists"
+  }
+}
+```
+
+**Example response:**
+```json
+{"op":"exists","field":"fields.gated","files_scanned":1,"non_json":0,"lines_with_field":2,"lines_without":498,"sample":"{\"fields\":{\"gated\":true,\"region\":\"fra\"},\"message\":\"req 42\",\"timestamp\":\"2026-01-15T10:00:00Z\"}"}
+```
+
+`lines_with_field: 2` out of 500 — the field fired exactly twice, and `sample` shows one of the lines. `lines_with_field: 0` with `non_json: 0` is a *proof* of absence over everything scanned.
+
+**Example request (group by region):**
+```json
+{
+  "name": "aggregate",
+  "arguments": {
+    "field": "fields.region",
+    "op": "values"
+  }
+}
+```
+
+**Example response (TOON histogram):**
+```
+# {"op":"values","field":"fields.region","files_scanned":3,"distinct_values":4,"non_json":12}
+[count|value]
+2113|fra
+1874|ams
+420|iad
+7|null
+```
+
+When the distinct-value cap was hit, the metadata carries `"omissions":{"values":{"omitted":N,"showing":"top 50 by count"}}` — a truncated histogram never looks complete.
+
+**When to use:** Prove structured-field presence/absence in one call (`exists`), see the distribution of a field's values (`values`), or count occurrences (`count`) — instead of grepping and hand-counting.
+
+---
+
 ## Correlation Tools
 
 ### correlate
 
 Search for a correlation ID (session ID, trace ID, request ID) across ALL log files. Returns a unified timeline sorted by timestamp, making it easy to trace a request across multiple services.
 
+No id in hand? Pass **`anchor`** instead (see [anchor mode](#anchor-mode-correlate-around-a-symptom-line) below): every match of a symptom regex becomes a time anchor, and the result is the merged cross-source timeline around each hit. `value` and `anchor` are mutually exclusive — pass exactly one.
+
 **Parameters:**
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `value` | string | Yes | -- | The correlation value to search for (e.g. a session ID, trace ID) |
-| `field` | string | No | -- | Restrict search to this field (dot-notation for JSON, `field=value` for plain text) |
+| `value` | string | Yes* | -- | The correlation value to search for (e.g. a session ID, trace ID). *Mutually exclusive with `anchor` |
+| `field` | string | No | -- | Restrict search to this field (dot-notation for JSON, `field=value` for plain text). Only with `value` |
+| `anchor` | object | Yes* | -- | `{pattern, window}` or `{pattern, before, after}` — correlate around a regex instead of an id. *Mutually exclusive with `value` |
 | `max_results` | integer | No | 200 | Maximum total results across all files |
+| `max_sections` | integer | No | 5 | Anchor mode: maximum window sections |
 | `format` | string | No | toon | Output format: `toon` or `json` |
 
 **Example request:**
@@ -538,6 +668,48 @@ Search for a correlation ID (session ID, trace ID, request ID) across ALL log fi
 When the `max_results` cap was hit, the metadata carries `"omissions":{"matches":{"omitted":N,"showing":"first 200 by time"}}` -- absent when the timeline is complete. See [Omissions](#omissions-never-truncate-silently).
 
 **When to use:** Trace a single request, session, or transaction across multiple services to understand the full lifecycle and pinpoint where failures occur.
+
+#### Anchor mode: correlate around a symptom line
+
+During a boot investigation you have a symptom line, not an id. Anchor mode takes a regex; every match becomes a **time anchor**, and the result is the unified source-tagged timeline of ALL lines (across every file) within a window around each anchor — the surrounding cross-source neighbourhood, merged and time-sorted.
+
+- **Window syntax:** symmetric `"±10s"` / `"±2m"` (ASCII `"+-10s"` accepted; units `s`/`m`/`h`/`d`; default ±30s), or asymmetric `before`/`after` durations.
+- **Multiple anchor hits → multiple window sections.** Overlapping windows MERGE into one section (its `anchor_count` says how many anchors it absorbed). Sections are capped at `max_sections`, reported in `omissions.sections`; total timeline entries are capped at `max_results`, reported in `omissions.matches`.
+- **Timestamp honesty (slice 002 rules, declared `LOG_TS_FORMATS` respected):** an anchor match whose timestamp cannot be parsed cannot place a window — counted in `anchors_unparsed_ts`. A scanned line whose timestamp cannot be parsed cannot be placed in (or proven outside) any window — counted in the result's `unparsed_ts`. Both zero means the windows are exact.
+
+**Example request (symptom line, no id):**
+```json
+{
+  "name": "correlate",
+  "arguments": {
+    "anchor": {"pattern": "boot loop detected", "window": "±10s"}
+  }
+}
+```
+
+**Example response:**
+```
+# {"anchor":"boot loop detected","window":"±10s","total_anchors":1,"anchors_unparsed_ts":0,"total_entries":5,"files_matched":["web.log","db.log","gw.log"],"unparsed_ts":0}
+== window 2026-01-15T09:59:55Z .. 2026-01-15T10:00:15Z (1 anchor) ==
+[content|file|line_number|severity|timestamp]
+[src:web-1] 2026-01-15T10:00:02Z INFO warmup|web.log|2|info|2026-01-15T10:00:02Z
+2026-01-15 10:00:04 ERROR too many connections|db.log|1|error|2026-01-15T10:00:04Z
+[src:web-1] 2026-01-15T10:00:05Z ERROR boot loop detected|web.log|3|error|2026-01-15T10:00:05Z
+upstream refused|gw.log|1|error|2026-01-15T10:00:06Z
+[src:web-1] 2026-01-15T10:00:08Z INFO retrying|web.log|4|info|2026-01-15T10:00:08Z
+```
+
+One window section per (merged) anchor neighbourhood; `[src:...]` tags ([streamed sources](#streamed-sources-log_sources)) keep per-line attribution visible in the merged timeline.
+
+**Asymmetric window** — mostly interested in what happened *after* the symptom:
+```json
+{
+  "name": "correlate",
+  "arguments": {
+    "anchor": {"pattern": "OOM killed", "before": "5s", "after": "1m"}
+  }
+}
+```
 
 ---
 
@@ -588,6 +760,10 @@ All tools return MCP error content for common failure cases:
 | `File not found: {file}` | The specified file does not exist in `LOG_DIR` |
 | `Invalid regex: {pattern}` | The search pattern could not be compiled |
 | `Unknown tool: {name}` | The tool name does not match any registered tool |
+| `value and anchor are mutually exclusive ...` | `correlate` was given both an id and an anchor |
+| `Invalid window ...` / `Invalid duration ...` | Anchor window spec did not parse (expected e.g. `±10s`, `±2m`, or `before`/`after` durations) |
+| `Invalid op: ...` | `aggregate` op was not `exists`, `values`, or `count` |
+| `cursor cannot be combined with field/rollup` | `search_logs` cursor works only on the plain line-scan path |
 
 ---
 
