@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`sync_logs` `since` was accepted but ignored** — the parameter was
+  declared in the tool schema yet discarded before reaching the sync, so a
+  time-filtered sync silently pulled everything. It is now implemented: the
+  cloud CLIs have no modification-time filter on their bulk sync commands,
+  so a sync with `since` lists remote objects with timestamps, filters
+  locally for modified strictly after `since` (and matching `prefix`), and
+  copies only the survivors. The result reports listed/matched/copied
+  counts; an unparseable `since` is a hard error naming the accepted forms
+  (ISO 8601 or relative shorthand like `1h`, `1d`). Caveat: `aws s3 ls`
+  prints timestamps in the CLI host's local timezone with no offset; they
+  are treated as UTC.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
