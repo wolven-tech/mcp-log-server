@@ -10,16 +10,25 @@ defmodule McpLogServer.Tools.SyncLogs do
 
   @impl true
   def description,
-    do: "Pull logs from cloud storage into the log directory. Supports gs://, s3://, and az:// URIs. Requires the respective CLI tool (gsutil, aws, az) to be installed."
+    do:
+      "Pull logs from cloud storage into the log directory. Supports gs://, s3://, and az:// URIs. Requires the respective CLI tool (gsutil, aws, az) to be installed."
 
   @impl true
   def schema do
     %{
       type: "object",
       properties: %{
-        source: %{type: "string", description: "Cloud storage URI (e.g. \"gs://bucket/logs/\", \"s3://bucket/logs/\", \"az://container/logs/\")"},
+        source: %{
+          type: "string",
+          description:
+            "Cloud storage URI (e.g. \"gs://bucket/logs/\", \"s3://bucket/logs/\", \"az://container/logs/\")"
+        },
         prefix: %{type: "string", description: "Only sync files matching this name prefix"},
-        since: %{type: "string", description: "Only sync files modified after this time. ISO 8601 or relative shorthand (e.g. \"1h\", \"1d\")"}
+        since: %{
+          type: "string",
+          description:
+            "Only sync files modified after this time. ISO 8601 or relative shorthand (e.g. \"1h\", \"1d\")"
+        }
       },
       required: ["source"]
     }
@@ -29,8 +38,13 @@ defmodule McpLogServer.Tools.SyncLogs do
   def execute(args, log_dir) do
     source = Map.get(args, "source", "")
     prefix = Map.get(args, "prefix")
-    _since = Map.get(args, "since")
 
-    UseCases.SyncLogs.run(source, log_dir, prefix)
+    opts =
+      case Map.get(args, "since") do
+        s when is_binary(s) and s != "" -> [since: s]
+        _ -> []
+      end
+
+    UseCases.SyncLogs.run(source, log_dir, prefix, opts)
   end
 end
