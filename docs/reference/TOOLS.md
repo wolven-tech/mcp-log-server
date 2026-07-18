@@ -842,10 +842,19 @@ Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cl
   "name": "sync_logs",
   "arguments": {
     "source": "gs://acme-prod-logs/api/",
-    "prefix": "api-"
+    "prefix": "api-",
+    "since": "6h"
   }
 }
 ```
+
+**`since` semantics:**
+
+- Accepted forms: ISO 8601 (`2026-07-01T10:00:00Z`) or relative shorthand (`30s`, `5m`, `2h`, `1d`, `1w`, meaning that far in the past from now). Anything else is a hard error — an unparseable `since` is never silently ignored.
+- The filter is **strictly after**: a file modified exactly at `since` is not synced.
+- Without `since`, the sync is a single bulk CLI command (`gsutil -m rsync -r` / `aws s3 sync` / `az storage blob download-batch`). None of the cloud CLIs supports a modification-time filter on those bulk commands, so with `since` the sync becomes **list-then-copy**: the remote objects are listed with their timestamps, filtered locally by `since` (and `prefix`), and only the survivors are copied.
+- The success message reports the honest counts — e.g. `Sync complete. 3 of 47 files modified after 2026-07-01T10:00:00Z copied.` — and zero matches is a success (`Sync complete. 0 files matched since filter.`), not an error.
+- **S3 timezone caveat:** `aws s3 ls` prints modification times in the local timezone of the host running the CLI, with no offset in the output. The server treats them as UTC, so on a host whose clock is not UTC the `since` cut-off can be off by the host's UTC offset.
 
 Synced files land in `LOG_DIR` and become visible to every other tool (`list_logs`, `all_errors`, `correlate`, ...). Files exceeding `MAX_LOG_FILE_MB` are still subject to the size guardrail after syncing.
 
