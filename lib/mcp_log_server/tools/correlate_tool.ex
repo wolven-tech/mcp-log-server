@@ -27,22 +27,70 @@ defmodule McpLogServer.Tools.CorrelateTool do
     %{
       type: "object",
       properties: %{
-        value: %{type: "string", description: "The correlation value to search for (e.g. a session ID, trace ID). Mutually exclusive with anchor"},
-        field: %{type: "string", description: "Restrict search to this field (dot-notation for JSON, field=value for plain text). Only with value"},
+        value: %{
+          type: "string",
+          description:
+            "The correlation value to search for (e.g. a session ID, trace ID). Mutually exclusive with anchor"
+        },
+        field: %{
+          type: "string",
+          description:
+            "Restrict search to this field (dot-notation for JSON, field=value for plain text). Only with value"
+        },
+        diagnostic: %{
+          type: "object",
+          description:
+            "Typed production identifiers. Strongest available correlation identifier is searched; tenant_id is verified against server configuration.",
+          properties: %{
+            tenant_id: %{type: "string"},
+            request_id: %{type: "string"},
+            trace_id: %{type: "string"},
+            run_id: %{type: "string"},
+            workflow_run_id: %{type: "string"},
+            entity_id: %{type: "string"},
+            conversation_id: %{type: "string"}
+          }
+        },
         anchor: %{
           type: "object",
-          description: "Correlate around a symptom regex instead of an id: every match becomes a time anchor. Mutually exclusive with value",
+          description:
+            "Correlate around a symptom regex instead of an id: every match becomes a time anchor. Mutually exclusive with value",
           properties: %{
-            pattern: %{type: "string", description: "Regex (case-insensitive) whose matches become anchors"},
-            window: %{type: "string", description: "Symmetric window around each anchor, e.g. \"±10s\", \"±2m\" (default ±30s)"},
-            before: %{type: "string", description: "Asymmetric window: duration before each anchor, e.g. \"10s\""},
-            after: %{type: "string", description: "Asymmetric window: duration after each anchor, e.g. \"30s\""}
+            pattern: %{
+              type: "string",
+              description: "Regex (case-insensitive) whose matches become anchors"
+            },
+            window: %{
+              type: "string",
+              description:
+                "Symmetric window around each anchor, e.g. \"±10s\", \"±2m\" (default ±30s)"
+            },
+            before: %{
+              type: "string",
+              description: "Asymmetric window: duration before each anchor, e.g. \"10s\""
+            },
+            after: %{
+              type: "string",
+              description: "Asymmetric window: duration after each anchor, e.g. \"30s\""
+            }
           },
           required: ["pattern"]
         },
-        max_results: %{type: "integer", description: "Max total results across all files (default: 200)", default: 200},
-        max_sections: %{type: "integer", description: "Anchor mode: max window sections (default: 5)", default: 5},
-        format: %{type: "string", enum: ["toon", "json"], description: "Output format (default: toon)"}
+        max_results: %{
+          type: "integer",
+          description: "Max total results across all files (default: 200)",
+          default: 200
+        },
+        max_sections: %{
+          type: "integer",
+          description: "Anchor mode: max window sections (default: 5)",
+          default: 5
+        },
+        format: %{
+          type: "string",
+          enum: ["toon", "json"],
+          description: "Output format (default: toon)"
+        }
       }
     }
   end
@@ -51,10 +99,11 @@ defmodule McpLogServer.Tools.CorrelateTool do
   def execute(args, log_dir) do
     value = Map.get(args, "value")
     anchor = Map.get(args, "anchor")
+    diagnostic_value = diagnostic_value(Map.get(args, "diagnostic"))
 
     cond do
-      is_binary(value) and value != "" and is_map(anchor) ->
-        {:error, "value and anchor are mutually exclusive — pass exactly one"}
+      Enum.count([present?(value), is_map(anchor), present?(diagnostic_value)], & &1) > 1 ->
+        {:error, "value, diagnostic, and anchor are mutually exclusive — pass exactly one"}
 
       is_map(anchor) ->
         execute_anchor(anchor, args, log_dir)
@@ -62,8 +111,11 @@ defmodule McpLogServer.Tools.CorrelateTool do
       is_binary(value) and value != "" ->
         execute_value(value, args, log_dir)
 
+      is_binary(diagnostic_value) and diagnostic_value != "" ->
+        execute_value(diagnostic_value, Map.delete(args, "field"), log_dir)
+
       true ->
-        {:error, "either value (id mode) or anchor (regex mode) is required"}
+        {:error, "either value, diagnostic correlation id, or anchor is required"}
     end
   end
 
@@ -118,4 +170,20 @@ defmodule McpLogServer.Tools.CorrelateTool do
       true -> nil
     end
   end
+
+  defp diagnostic_value(diagnostic) when is_map(diagnostic) do
+    Enum.find_value(
+      ~w(trace_id request_id workflow_run_id run_id entity_id conversation_id),
+      fn key ->
+        case Map.get(diagnostic, key) do
+          value when is_binary(value) and value != "" -> value
+          _ -> nil
+        end
+      end
+    )
+  end
+
+  defp diagnostic_value(_), do: nil
+
+  defp present?(value), do: is_binary(value) and value != ""
 end

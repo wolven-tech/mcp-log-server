@@ -40,7 +40,7 @@ lastModified: 2026-07-17
 
 | Document | Audience | Description |
 |----------|----------|-------------|
-| [Tool Reference](reference/TOOLS.md) | Developers | Complete API reference for all 12 tools |
+| [Tool Reference](reference/TOOLS.md) | Developers | Complete API reference for all 13 tools |
 
 ## Decisions
 

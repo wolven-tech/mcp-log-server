@@ -62,7 +62,7 @@ title: Home
 
 <section id="tools">
   <div class="container">
-    <h2>12 Tools</h2>
+    <h2>13 Tools</h2>
     <p class="section-sub">Organized by workflow stage: discover, analyze, correlate, maintain.</p>
 
     <table class="tools-table">
@@ -74,6 +74,7 @@ title: Home
         <tr><td>list_logs</td><td>List available log files with size and modification time</td></tr>
         <tr><td>log_stats</td><td>Line count, error/warn/fatal counts, file size &mdash; quick health check</td></tr>
         <tr><td>time_range</td><td>Earliest and latest timestamps with human-readable span</td></tr>
+        <tr><td>source_manifest</td><td>Prove source freshness, coverage, timestamp quality, and warnings before diagnosis</td></tr>
         <tr><td colspan="2" class="tool-category">Analysis</td></tr>
         <tr><td>summarize</td><td>"What changed?" &mdash; diff a time window against the one before it: new/gone templates, error-rate and volume deltas</td></tr>
         <tr><td>all_errors</td><td>Aggregate errors across ALL files &mdash; best first call</td></tr>
@@ -336,7 +337,7 @@ title: Home
       </a>
       <a href="reference/TOOLS.html" class="card" style="text-decoration: none;">
         <h3>Tool Reference</h3>
-        <p>Complete API for all 12 tools with parameters and examples.</p>
+        <p>Complete API for all 13 tools with parameters and examples.</p>
       </a>
       <a href="guides/USE_CASE_MONOREPO.html" class="card" style="text-decoration: none;">
         <h3>Use Case: Monorepo</h3>

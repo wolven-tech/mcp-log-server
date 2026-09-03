@@ -7,10 +7,9 @@ defmodule McpLogServer.Server do
   """
 
   alias McpLogServer.Protocol.JsonRpc
+  alias McpLogServer.Protocol.DiagnosticContext
   alias McpLogServer.Tools.{Dispatcher, Registry}
   alias McpLogServer.Transport.Stdio
-
-  @server_info %{name: "mcp-log-server", version: "0.1.0"}
 
   @doc "Handle a raw JSON line from the transport."
   @spec handle_message(String.t()) :: :ok
@@ -29,12 +28,15 @@ defmodule McpLogServer.Server do
 
   # -- MCP routing --
 
-  defp route(%{method: "initialize", id: id}) do
+  defp route(%{method: "initialize", id: id, params: params}) do
+    requested = get_in(params, ["protocolVersion"])
+    protocol_version = if requested == "2026-07-28", do: "2026-07-28", else: "2024-11-05"
+
     Stdio.send_response(
       JsonRpc.result(id, %{
-        protocolVersion: "2024-11-05",
-        capabilities: %{tools: %{}},
-        serverInfo: @server_info
+        protocolVersion: protocol_version,
+        capabilities: %{tools: %{listChanged: false}},
+        serverInfo: %{name: "mcp-log-server", version: DiagnosticContext.server_version()}
       })
     )
   end
@@ -58,9 +60,15 @@ defmodule McpLogServer.Server do
 
       true ->
         response =
-          case Dispatcher.call(tool, args, log_dir()) do
-            {:ok, text} -> JsonRpc.tool_result(id, text)
-            {:error, reason} -> JsonRpc.tool_error(id, reason)
+          case DiagnosticContext.validate_tenant(args) do
+            :ok ->
+              case Dispatcher.call(tool, args, log_dir()) do
+                {:ok, text} -> JsonRpc.tool_result(id, text, args)
+                {:error, reason} -> JsonRpc.tool_error(id, reason, args)
+              end
+
+            {:error, reason} ->
+              JsonRpc.tool_error(id, reason, args)
           end
 
         Stdio.send_response(response)

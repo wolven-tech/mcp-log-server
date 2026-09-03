@@ -59,7 +59,7 @@ Your App → writes logs → /tmp/mcp-logs/*.log
                     asks questions, gets answers
 ```
 
-The server reads `.log` files from a directory and exposes 12 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). It auto-detects JSON structured logs and plain text, extracts severity from standard fields, parses timestamps, and correlates entries across files.
+The server reads `.log` files from a directory and exposes 13 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). It auto-detects JSON structured logs and plain text, extracts severity from standard fields, parses timestamps, and correlates entries across files.
 
 Output uses **TOON (Token-Oriented Object Notation)** — a pipe-delimited tabular format that delivers ~50% token savings over JSON:
 
@@ -74,7 +74,7 @@ ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
 
 ## Tools
 
-12 tools organized by workflow stage:
+13 tools organized by workflow stage:
 
 ### Discovery
 
@@ -83,6 +83,7 @@ ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
 | [`list_logs`](docs/reference/TOOLS.md#list_logs) | List available log files with size and modification time |
 | [`log_stats`](docs/reference/TOOLS.md#log_stats) | Quick health check — line count, error/warn/fatal counts, file size |
 | [`time_range`](docs/reference/TOOLS.md#time_range) | Earliest and latest timestamps in a file with human-readable span |
+| [`source_manifest`](docs/reference/TOOLS.md#source_manifest) | Prove source freshness, coverage, timestamp quality, and warnings before diagnosis |
 
 ### Analysis
 
@@ -111,13 +112,14 @@ ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
 ### Recommended Workflow
 
 ```
-0. summarize               → "What changed in the last 15 minutes?"
-1. all_errors              → "What's broken?"
-2. log_stats / time_range  → "How bad? What time window?"
-3. get_errors + level      → "Show me only real errors, no warnings"
-4. search_logs + context   → "What happened around this error?"
-5. aggregate               → "Did any line emit this field? What values?"
-6. correlate               → "Trace this request across services"
+0. source_manifest         → "Can these sources prove this time window?"
+1. summarize               → "What changed in the last 15 minutes?"
+2. all_errors              → "What's broken?"
+3. log_stats / time_range  → "How bad? What time window?"
+4. get_errors + level      → "Show me only real errors, no warnings"
+5. search_logs + context   → "What happened around this error?"
+6. aggregate               → "Did any line emit this field? What values?"
+7. correlate               → "Trace this request across services"
 ```
 
 See the [Tool Reference](docs/reference/TOOLS.md) for complete parameter documentation and examples.
@@ -326,6 +328,8 @@ LOG_EXTRA_PATTERNS="circuit.breaker|deadline.exceeded" docker run ...
 | `LOG_SOURCE_ROTATIONS` | `3` | Rotated files kept per streamed source |
 | `LOG_TS_FORMATS` | _(none)_ | Declared timestamp formats: `glob=format` entries separated by `;` (e.g. `fly-*.log=%FT%T%.fZ; dev-*.log=%H:%M:%S`) |
 | `LOG_INDEX` | `on` | Set `off` (or `0`/`false`) to disable the persistent index; queries fall back to linear scans with identical results |
+| `MCP_LOG_SYNC_ENABLED` | `false` | Permit `sync_logs` mutation when caller also sets `dry_run: false` |
+| `MCP_LOG_SYNC_ALLOWED_SOURCES` | _(none)_ | Comma-separated `gs://`, `s3://`, or `az://` URI prefixes allowed for sync |
 | `LOG_EXTRA_PATTERNS` | _(none)_ | Additional error patterns (pipe-separated regex) |
 | `LOG_ERROR_PATTERNS` | _(none)_ | Override default error patterns |
 | `LOG_WARN_PATTERNS` | _(none)_ | Override default warn patterns |
@@ -387,7 +391,7 @@ See the [Architecture docs](docs/concepts/ARCHITECTURE.md) for the full module b
 
 | | |
 |---|---|
-| [Tool Reference](docs/reference/TOOLS.md) | All 12 tools with parameters, examples, and response formats |
+| [Tool Reference](docs/reference/TOOLS.md) | All 13 tools with parameters, examples, and response formats |
 | [TOON Format](docs/concepts/TOON_FORMAT.md) | Token-Oriented Object Notation specification |
 | [Architecture](docs/concepts/ARCHITECTURE.md) | Ports & adapters layer design, Tool behaviour, security model |
 | [ADR-001: Index Storage](docs/decisions/001-index-storage.md) | Why the persistent index uses ETS+DETS instead of SQLite |

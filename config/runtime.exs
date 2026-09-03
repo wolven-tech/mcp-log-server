@@ -1,7 +1,6 @@
 import Config
 
-config :logger, :default_handler,
-  config: [type: :standard_error]
+config :logger, :default_handler, config: [type: :standard_error]
 
 config :logger,
   level: :warning
@@ -30,6 +29,20 @@ config :mcp_log_server, :log_retention_days, log_retention_days
 # e.g. LOG_SOURCES='fly:cmd=flyctl logs -a my-app; k8s:cmd=kubectl logs -f deploy/api'
 # Validated at boot by McpLogServer.Config.LogSources.init!/0.
 config :mcp_log_server, :log_sources, System.get_env("LOG_SOURCES")
+
+# Cloud log import is an explicit operator capability. Tool calls preview by
+# default; mutation requires both this switch and an allowlisted URI prefix.
+config :mcp_log_server,
+       :sync_enabled,
+       System.get_env("MCP_LOG_SYNC_ENABLED", "false") in ["1", "true", "on"]
+
+sync_allowed_sources =
+  System.get_env("MCP_LOG_SYNC_ALLOWED_SOURCES", "")
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+
+config :mcp_log_server, :sync_allowed_sources, sync_allowed_sources
 
 # Rotation threshold for streamed source files, in MB.
 # Defaults to MAX_LOG_FILE_MB so an unattended stream never grows into the
