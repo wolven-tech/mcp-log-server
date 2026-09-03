@@ -64,6 +64,21 @@ defmodule McpLogServer.Tools.CorrelateToolTest do
     end
   end
 
+  describe "correlate tool with diagnostic identifiers" do
+    test "uses typed request id without requiring a field guess" do
+      {:ok, output} =
+        Dispatcher.call(
+          "correlate",
+          %{"diagnostic" => %{"tenant_id" => "tenant-a", "request_id" => "abc-123"}},
+          @tmp_dir
+        )
+
+      assert output =~ "gateway.log"
+      assert output =~ "api.log"
+      assert output =~ "worker.log"
+    end
+  end
+
   describe "correlate tool (JSON format)" do
     test "returns full result as JSON" do
       {:ok, output} =

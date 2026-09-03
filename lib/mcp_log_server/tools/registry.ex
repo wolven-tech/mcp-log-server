@@ -16,6 +16,7 @@ defmodule McpLogServer.Tools.Registry do
     McpLogServer.Tools.AllErrors,
     McpLogServer.Tools.Aggregate,
     McpLogServer.Tools.Summarize,
+    McpLogServer.Tools.SourceManifest,
     McpLogServer.Tools.SyncLogs
   ]
 
@@ -24,10 +25,36 @@ defmodule McpLogServer.Tools.Registry do
   @spec definitions() :: [map()]
   def definitions do
     Enum.map(@tools, fn mod ->
-      %{name: mod.name(), description: mod.description(), inputSchema: mod.schema()}
+      read_only? = mod.name() != "sync_logs"
+
+      %{
+        name: mod.name(),
+        title: title(mod.name()),
+        description: mod.description(),
+        inputSchema: mod.schema(),
+        outputSchema: %{
+          type: "object",
+          properties: %{
+            context: %{type: "object"},
+            result: %{}
+          },
+          required: ["context", "result"],
+          additionalProperties: true
+        },
+        annotations: %{
+          readOnlyHint: read_only?,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: not read_only?
+        }
+      }
     end)
   end
 
   @spec lookup(String.t()) :: module() | nil
   def lookup(name), do: Map.get(@tool_map, name)
+
+  defp title(name) do
+    name |> String.replace("_", " ") |> String.capitalize()
+  end
 end

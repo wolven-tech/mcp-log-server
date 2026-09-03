@@ -11,7 +11,7 @@ tags: [reference, api, tools]
 
 # Tool Reference
 
-MCP Log Server exposes 12 tools via the MCP `tools/call` method. All tools return results as MCP text content.
+MCP Log Server exposes 13 tools via the MCP `tools/call` method. Tools retain text content for compatibility and also return machine-readable `structuredContent` with diagnostic provenance. Common credentials are redacted before either representation crosses MCP.
 
 ---
 
@@ -19,13 +19,14 @@ MCP Log Server exposes 12 tools via the MCP `tools/call` method. All tools retur
 
 A typical investigation follows this sequence:
 
-0. **`summarize`** -- "What changed in the last 15 minutes?" One call diffs a time window against the window before it: new/gone message templates, error-rate delta, volume delta per source. The highest-leverage first call during an incident.
-1. **`all_errors`** -- Health overview across all log files. Start here to see which services have problems.
-2. **`log_stats`** or **`time_range`** -- Understand the scope of a specific file (line counts, error counts, time span).
-3. **`get_errors`** with `level`/`since` -- Targeted investigation of a single file, filtering by severity and time window.
-4. **`search_logs`** with `field`/`context` -- Deep dive into specific patterns, optionally scoped to a JSON field.
-5. **`aggregate`** -- Prove structured-field presence/absence or group by a JSON field (`op: exists` / `values` / `count`).
-6. **`correlate`** -- Cross-service tracing using a request ID, session ID, or trace ID — or, when you only have a symptom line, an `anchor` regex whose matches become time windows.
+0. **`source_manifest`** -- Verify available sources, freshness, warnings, and timestamp parse coverage before interpreting absence.
+1. **`summarize`** -- "What changed in the last 15 minutes?" One call diffs a time window against the window before it: new/gone message templates, error-rate delta, volume delta per source.
+2. **`all_errors`** -- Health overview across all log files. Start here to see which services have problems.
+3. **`log_stats`** or **`time_range`** -- Understand the scope of a specific file (line counts, error counts, time span).
+4. **`get_errors`** with `level`/`since` -- Targeted investigation of a single file, filtering by severity and time window.
+5. **`search_logs`** with `field`/`context` -- Deep dive into specific patterns, optionally scoped to a JSON field.
+6. **`aggregate`** -- Prove structured-field presence/absence or group by a JSON field (`op: exists` / `values` / `count`).
+7. **`correlate`** -- Cross-service tracing using a request ID, session ID, or trace ID — or, when you only have a symptom line, an `anchor` regex whose matches become time windows. Pass typed identifiers under `diagnostic` to avoid guessing field names.
 
 Watching something in progress (a deploy, a restart loop)? `tail_log` and `search_logs` return an opaque **`cursor`** — pass it back to receive only lines appended since the last call.
 
@@ -824,6 +825,26 @@ When the `max_values` cap was hit, a `# {...}` metadata line carries `"omissions
 
 ## Maintenance Tools
 
+### source_manifest
+
+Describe evidence coverage before searching. Result reports source identifiers, freshness, line and byte counts, timestamp parse quality, live-source status, warnings, and explicit completeness. Absolute paths are never returned.
+
+**Parameters:**
+
+| Name | Type | Required | Description |
+|------|------|----------|-------------|
+| `file` | string | No | Exact source file name; omit to inspect every visible source |
+
+**Example request:**
+
+```json
+{"name":"source_manifest","arguments":{"file":"api.log"}}
+```
+
+Use `freshThrough`, `timestampParseRatio`, and `completeness` before concluding an event is absent. A stale or skipped source means absence is not proven.
+
+---
+
 ### sync_logs
 
 Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cloud Storage), `s3://` (Amazon S3), and `az://` (Azure Blob) URIs. Requires the respective CLI tool (`gsutil`, `aws`, `az`) to be installed and authenticated on the host running the server.
@@ -835,6 +856,7 @@ Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cl
 | `source` | string | Yes | -- | Cloud storage URI (e.g. `gs://bucket/logs/`, `s3://bucket/logs/`, `az://container/logs/`) |
 | `prefix` | string | No | -- | Only sync files matching this name prefix |
 | `since` | string | No | -- | Only sync files modified after this time. ISO 8601 or relative shorthand (e.g. `1h`, `1d`) |
+| `dry_run` | boolean | No | `true` | Preview safe source label and filters without copying |
 
 **Example request:**
 ```json
@@ -843,7 +865,8 @@ Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cl
   "arguments": {
     "source": "gs://acme-prod-logs/api/",
     "prefix": "api-",
-    "since": "6h"
+    "since": "6h",
+    "dry_run": true
   }
 }
 ```
@@ -856,7 +879,7 @@ Pull logs from cloud storage into the log directory. Supports `gs://` (Google Cl
 - The success message reports the honest counts — e.g. `Sync complete. 3 of 47 files modified after 2026-07-01T10:00:00Z copied.` — and zero matches is a success (`Sync complete. 0 files matched since filter.`), not an error.
 - **S3 timezone caveat:** `aws s3 ls` prints modification times in the local timezone of the host running the CLI, with no offset in the output. The server treats them as UTC, so on a host whose clock is not UTC the `since` cut-off can be off by the host's UTC offset.
 
-Synced files land in `LOG_DIR` and become visible to every other tool (`list_logs`, `all_errors`, `correlate`, ...). Files exceeding `MAX_LOG_FILE_MB` are still subject to the size guardrail after syncing.
+Actual copying requires `dry_run: false`, `MCP_LOG_SYNC_ENABLED=true`, and a source matching one comma-separated prefix in `MCP_LOG_SYNC_ALLOWED_SOURCES`. Synced files land in `LOG_DIR` and become visible to every other tool (`list_logs`, `all_errors`, `correlate`, ...). Files exceeding `MAX_LOG_FILE_MB` are still subject to the size guardrail after syncing.
 
 **When to use:** Bring production logs stored in a cloud bucket into the local analysis window without leaving the MCP session.
 
