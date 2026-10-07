@@ -1,414 +1,156 @@
-<p align="center">
-  <h1 align="center">MCP Log Server</h1>
-  <p align="center">
-    Token-efficient log analysis tools for LLMs via the Model Context Protocol
-  </p>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/wolven-tech/mcp-log-server/actions/workflows/ci.yml"><img src="https://github.com/wolven-tech/mcp-log-server/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/wolven-tech/mcp-log-server/actions/workflows/release.yml"><img src="https://github.com/wolven-tech/mcp-log-server/actions/workflows/release.yml/badge.svg" alt="Release"></a>
-  <a href="https://github.com/wolven-tech/mcp-log-server/pkgs/container/mcp-log-server"><img src="https://img.shields.io/badge/ghcr.io-mcp--log--server-blue?logo=docker" alt="Docker"></a>
-  <a href="https://github.com/wolven-tech/mcp-log-server/releases/latest"><img src="https://img.shields.io/github/v/release/wolven-tech/mcp-log-server?color=green" alt="Latest Release"></a>
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
-</p>
+# MCP Log Server
 
-<p align="center">
-  <a href="https://modelcontextprotocol.io/"><img src="https://img.shields.io/badge/MCP-compatible-purple" alt="MCP Compatible"></a>
-  <a href="https://elixir-lang.org/"><img src="https://img.shields.io/badge/Elixir-1.17+-4B275F?logo=elixir&logoColor=white" alt="Elixir 1.17+"></a>
-  <a href="https://www.erlang.org/"><img src="https://img.shields.io/badge/OTP-27+-A90533?logo=erlang&logoColor=white" alt="OTP 27+"></a>
-  <a href="https://hexdocs.pm/jason/"><img src="https://img.shields.io/badge/deps-1%20(jason)-brightgreen" alt="Dependencies: 1"></a>
-</p>
+**Token-efficient log analysis tools for LLMs via the Model Context Protocol.**<br>
+Claude reads structured answers to specific questions instead of raw log dumps, using ~50% fewer tokens.
 
-<p align="center">
-  <a href="#quick-install">Quick Install</a> &middot;
-  <a href="examples/README.md">Examples</a> &middot;
-  <a href="docs/reference/TOOLS.md">Tool Reference</a> &middot;
-  <a href="docs/guides/LOG_STRUCTURING.md">Log Structuring Guide</a> &middot;
-  <a href="docs/concepts/ARCHITECTURE.md">Architecture</a>
-</p>
+[![crates.io](https://img.shields.io/badge/ghcr.io-mcp--log--server-blue?logo=docker&logoColor=white)](https://github.com/wolven-tech/mcp-log-server/pkgs/container/mcp-log-server)
+[![CI](https://img.shields.io/github/actions/workflow/status/wolven-tech/mcp-log-server/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI)](https://github.com/wolven-tech/mcp-log-server/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wolven-tech/mcp-log-server?color=green)](https://github.com/wolven-tech/mcp-log-server/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
+[![MCP compatible](https://img.shields.io/badge/MCP-compatible-purple)](https://modelcontextprotocol.io/)
+[![Elixir 1.17+](https://img.shields.io/badge/Elixir-1.17%2B-4B275F?logo=elixir&logoColor=white)](#install)
+[![OTP 27+](https://img.shields.io/badge/OTP-27%2B-A90533?logo=erlang&logoColor=white)](#install)
+
+[![Elixir, Erlang, Docker](https://skillicons.dev/icons?i=elixir,erlang,docker)](https://skillicons.dev)
+
+[Install](#install) · [Examples](examples/README.md) · [Tools](docs/reference/TOOLS.md) · [Architecture](docs/concepts/ARCHITECTURE.md) · [Log structuring](docs/guides/LOG_STRUCTURING.md)
+
+</div>
 
 ---
 
-## The Problem
+LLMs waste tokens on raw log files. A 10 MB log dump burns thousands of tokens on irrelevant INFO lines before reasoning starts. Instead of dumping logs, Claude calls structured tools: list errors, find patterns, correlate across services, trace a request. Responses use ~50% fewer tokens than JSON because they're formatted as TOON (Token-Oriented Object Notation) — pipe-delimited rows, not nested objects.
 
-LLMs waste tokens parsing raw log files. A 10 MB log dump burns thousands of tokens on irrelevant INFO lines before the model even starts reasoning. Developers paste terminal output, Claude reads noise, everyone loses.
+| Scenario | Before | After |
+|---|---|---|
+| "Here's my 500-line terminal output" | 2000+ tokens, mostly noise | Claude calls `all_errors` → 10 errors across 3 services → ~100 tokens |
+| Correlate a request through services | Manually read each service's log | Claude calls `correlate(field="requestId")` → unified timeline → ~80 tokens |
+| Filter errors by severity and time | Paste everything, ask Claude to grep | Claude calls `get_errors(level="error", since="30m")` → ~60 tokens |
 
-**MCP Log Server fixes this.** Instead of dumping logs, Claude calls structured tools that return only what matters — errors, search results, cross-service timelines — in a format that uses ~50% fewer tokens than JSON.
+**13 tools** organized by workflow: discovery (list, stats), analysis (errors, search), correlation (trace requests), maintenance (sync from cloud storage).
 
-### Before vs After
+| Category | Tools |
+|---|---|
+| **Discovery** | `list_logs`, `log_stats`, `time_range`, `source_manifest` |
+| **Analysis** | `all_errors`, `get_errors`, `search_logs`, `tail_log`, `aggregate`, `summarize` |
+| **Correlation** | `correlate`, `trace_ids` |
+| **Maintenance** | `sync_logs` (cloud storage) |
 
-```
-BEFORE: "Here's my terminal output" → paste 500 lines → 2000+ tokens of noise
+## Install
 
-AFTER:  Claude calls all_errors    → 10 errors across 3 services → ~100 tokens
-        Claude calls correlate     → unified timeline for one request → ~80 tokens
-        Claude calls get_errors    → filtered by severity + time → ~60 tokens
-```
+### Docker (recommended)
 
----
-
-## How It Works
-
-```
-Your App → writes logs → /tmp/mcp-logs/*.log
-                              ↓
-                    MCP Log Server (stdio)
-                              ↓
-                    Claude / Cursor / MCP Client
-                    asks questions, gets answers
-```
-
-The server reads `.log` files from a directory and exposes 13 tools via the [Model Context Protocol](https://modelcontextprotocol.io/). It auto-detects JSON structured logs and plain text, extracts severity from standard fields, parses timestamps, and correlates entries across files.
-
-Output uses **TOON (Token-Oriented Object Notation)** — a pipe-delimited tabular format that delivers ~50% token savings over JSON:
-
-```
-[severity|timestamp|message|line_number]
-ERROR|2026-03-20T14:02:15Z|Connection refused to postgres:5432|42
-WARN|2026-03-20T14:02:16Z|Retrying in 5s...|43
-ERROR|2026-03-20T14:02:20Z|Max retries exceeded|87
-```
-
----
-
-## Tools
-
-13 tools organized by workflow stage:
-
-### Discovery
-
-| Tool | What it does |
-|------|-------------|
-| [`list_logs`](docs/reference/TOOLS.md#list_logs) | List available log files with size and modification time |
-| [`log_stats`](docs/reference/TOOLS.md#log_stats) | Quick health check — line count, error/warn/fatal counts, file size |
-| [`time_range`](docs/reference/TOOLS.md#time_range) | Earliest and latest timestamps in a file with human-readable span |
-| [`source_manifest`](docs/reference/TOOLS.md#source_manifest) | Prove source freshness, coverage, timestamp quality, and warnings before diagnosis |
-
-### Analysis
-
-| Tool | What it does |
-|------|-------------|
-| [`summarize`](docs/reference/TOOLS.md#summarize) | "What changed?" — diff a time window against the window before it: new/gone message templates, error-rate delta, volume delta |
-| [`all_errors`](docs/reference/TOOLS.md#all_errors) | Aggregate errors across ALL log files — best first call |
-| [`get_errors`](docs/reference/TOOLS.md#get_errors) | Extract errors with severity filtering (`level`), exclusion patterns, and time range |
-| [`search_logs`](docs/reference/TOOLS.md#search_logs) | Regex search with context lines, JSON field targeting, time range, template rollup, and polling cursor |
-| [`tail_log`](docs/reference/TOOLS.md#tail_log) | Last N lines from a file, with optional `since` filtering and polling cursor |
-| [`aggregate`](docs/reference/TOOLS.md#aggregate) | Aggregate on a JSON field: presence proof (`exists`), value histogram (`values`), or total count |
-
-### Correlation
-
-| Tool | What it does |
-|------|-------------|
-| [`correlate`](docs/reference/TOOLS.md#correlate) | Trace a request/session across ALL log files — unified timeline sorted by timestamp; anchor mode turns a symptom regex into ±time windows |
-| [`trace_ids`](docs/reference/TOOLS.md#trace_ids) | Discover unique session/request/trace IDs with counts and time ranges |
-
-### Maintenance
-
-| Tool | What it does |
-|------|-------------|
-| [`sync_logs`](docs/reference/TOOLS.md#sync_logs) | Pull logs from cloud storage (`gs://`, `s3://`, `az://`) into the log directory |
-
-### Recommended Workflow
-
-```
-0. source_manifest         → "Can these sources prove this time window?"
-1. summarize               → "What changed in the last 15 minutes?"
-2. all_errors              → "What's broken?"
-3. log_stats / time_range  → "How bad? What time window?"
-4. get_errors + level      → "Show me only real errors, no warnings"
-5. search_logs + context   → "What happened around this error?"
-6. aggregate               → "Did any line emit this field? What values?"
-7. correlate               → "Trace this request across services"
-```
-
-See the [Tool Reference](docs/reference/TOOLS.md) for complete parameter documentation and examples.
-
----
-
-## Quick Install
-
-### One-liner (Docker)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/wolven-tech/mcp-log-server/main/setup.sh | bash
-```
-
-The setup script pulls the Docker image from GHCR, creates a log directory, auto-detects your MCP client (Cursor, VS Code), and writes the config file.
-
-### Manual (Docker)
-
-```bash
+```sh
 docker pull ghcr.io/wolven-tech/mcp-log-server:latest
 ```
 
-Add to `.mcp.json` in your project root:
+Add to `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "log-server": {
       "command": "docker",
-      "args": [
-        "run", "--rm", "-i",
-        "-v", "./tmp/logs:/tmp/mcp-logs:ro",
-        "ghcr.io/wolven-tech/mcp-log-server:latest"
-      ]
+      "args": ["run", "--rm", "-i", "-v", "./tmp/logs:/tmp/mcp-logs:ro", "ghcr.io/wolven-tech/mcp-log-server:latest"]
     }
   }
 }
 ```
 
-### From Source
+### From source
 
-```bash
+```sh
 git clone https://github.com/wolven-tech/mcp-log-server.git
 cd mcp-log-server
 mix deps.get
 LOG_DIR=/path/to/logs mix run --no-halt
 ```
 
-### For Teams
+## What it does
 
-Copy [`.mcp.json.example`](.mcp.json.example) into your project root so every contributor gets the MCP server pre-configured — no individual setup needed.
+| Capability | Tool | Example |
+|---|---|---|
+| **Find errors** | `all_errors` | Aggregate errors across all services, best-first |
+| **Filter errors** | `get_errors` | Extract errors with severity, exclusion patterns, time range |
+| **Search logs** | `search_logs` | Regex search with context, JSON field targeting, template rollup |
+| **Correlate** | `correlate` | Trace a request/session across all services in one timeline |
+| **Tail** | `tail_log` | Last N lines with optional filtering and polling cursor |
+| **Summarize** | `summarize` | "What changed?" — diff two time windows for new/gone patterns |
 
-```makefile
-# Add to your Makefile
-mcp-log-setup:
-	docker pull ghcr.io/wolven-tech/mcp-log-server:latest
-	mkdir -p ./tmp/logs
-	test -f .mcp.json || cp .mcp.json.example .mcp.json
-```
+**Structured format:** Auto-detects JSON logs (Pino, structlog, GCP), extracts severity from standard fields, parses timestamps, and normalizes output to TOON format.
 
----
-
-## See It In Action
-
-The [`examples/`](examples/README.md) directory contains sample logs from a multi-service platform (API + recommendation service + gateway) and walks through debugging a cascading failure using every tool.
-
-**The scenario:** An upstream WebSocket connection drops at 14:02. The API falls back to slow polling, exhausting PostgreSQL connections. The recommendation service loses its vector database. The gateway trips its circuit breaker.
-
-**The walkthrough shows:**
+## How it works
 
 ```
-Step 1: all_errors                          → 10 errors across 3 services
-Step 2: time_range                          → incident spans 14:00-14:05
-Step 3: get_errors(level: "error", since:)  → 5 real errors, no warning noise
-Step 4: search_logs(context: 2)             → polling fallback caused the DB timeout
-Step 5: correlate(value: "req-006")         → full cascade across 3 services
-Step 6: trace_ids(field: "sessionId")       → 2 affected user sessions
+Your app → logs to /tmp/mcp-logs/*.log
+              ↓
+        MCP Log Server (stdio)
+              ↓
+        Claude / Cursor asks questions
+        Server returns structured answers
 ```
 
-Try it yourself:
+The server reads `.log` files and exposes 13 tools via MCP. Auto-detects format (JSON lines, JSON arrays, plain text), extracts severity from standard fields, correlates entries across files.
 
-```bash
+Output format is **TOON** — pipe-delimited rows:
+
+```
+[severity|timestamp|message|line_number]
+ERROR|2026-03-20T14:02:15Z|Connection refused to postgres:5432|42
+WARN|2026-03-20T14:02:16Z|Retrying in 5s...|43
+```
+
+## Examples
+
+See [examples/README.md](examples/README.md) for a step-by-step walkthrough debugging a cascading failure (WebSocket drop → API fallback → DB exhaustion → circuit breaker trip) across 3 services.
+
+Try it:
+
+```sh
 LOG_DIR=./examples/logs mix run --no-halt
-# or
-docker run --rm -i -v $(pwd)/examples/logs:/tmp/mcp-logs ghcr.io/wolven-tech/mcp-log-server:latest
 ```
 
----
+Then ask Claude to call the tools in order:
+1. `all_errors` → find the 10 errors
+2. `time_range` → measure the incident window
+3. `get_errors(level: "error")` → filter warnings
+4. `search_logs(context: 2)` → read around errors
+5. `correlate(value: "req-006")` → trace the request
+6. `trace_ids` → find affected sessions
 
-## Key Features
+## Key features
 
-### Auto-Detect JSON Structured Logs
-
-Drop in JSON log files (from Pino, structlog, GCP Cloud Logging, etc.) and the server automatically:
-
-- Detects the format (JSON Lines, JSON arrays, or plain text)
-- Extracts `severity` from standard fields (`severity`, `level`, `log.level`)
-- Maps numeric Pino levels (50 = error, 60 = fatal)
-- Uses severity for error detection — **zero false positives** vs regex on plain text
-
-```json
-{"severity":"ERROR","message":"Connection refused","timestamp":"2026-03-20T14:02:15Z"}
-```
-
-### Time-Based Filtering
-
-Every analysis tool supports `since` and `until` parameters — absolute or relative:
-
-```json
-{"name": "get_errors", "arguments": {"file": "api.log", "since": "30m"}}
-{"name": "search_logs", "arguments": {"file": "api.log", "pattern": "timeout", "since": "2026-03-20T14:00:00Z", "until": "2026-03-20T14:30:00Z"}}
-```
-
-### Cross-Service Correlation
-
-Trace a request, session, or trace ID across every log file in one call:
-
-```json
-{"name": "correlate", "arguments": {"value": "req-abc-123", "field": "requestId"}}
-```
-
-Returns a unified timeline sorted by timestamp, showing the request's path through gateway, API, worker, and any other service.
-
-No ID to search for? Anchor mode takes a symptom regex instead — each match becomes a ±window (e.g. `"±10s"`) and everything inside those windows across all files is returned:
-
-```json
-{"name": "correlate", "arguments": {"anchor": {"pattern": "boot loop detected", "window": "±10s"}}}
-```
-
-### "What Changed?" Summaries and Template Rollup
-
-`summarize` diffs a time window against the equal-length window before it in one call: new/gone message templates (with counts, `instances_seen`, first timestamp, sample line), error-rate delta, and volume delta per source — the highest-leverage first call during an incident.
-
-`search_logs` and `all_errors` accept `rollup: true` to group repeated lines into message templates (numbers, IDs, and hex strings normalized away), so 10,000 repeats of the same error cost one row with a count and `instances_seen`.
-
-### Polling Cursors
-
-`tail_log` and `search_logs` return an opaque `cursor`. Pass it back on the next call to receive only lines appended since — watch a deploy or restart loop without re-reading (or re-paying for) the whole file.
-
-### Persistent Index
-
-An incremental ETS+DETS index under `LOG_DIR/.index/` accelerates time-window and severity scans. It is a pure cache: queries never block on it, results are identical with or without it, and every response reports `index_used` so you know which path ran. Disable with `LOG_INDEX=off`. See [ADR-001](docs/decisions/001-index-storage.md) for the storage choice.
-
-### Honest Truncation and Fail-Open Timestamps
-
-- Every capped list is marked with a uniform `omissions` block (skipped files, capped rows) — nothing is truncated silently.
-- Lines whose timestamps cannot be parsed are never dropped by `since`/`until` (fail-open); instead responses count them as `unparsed_ts`, and `log_stats`/`time_range` report a sampled `ts_parse_ratio`.
-- Dev-server output parses out of the box: bare `HH:MM:SS` prefixes, `[vite]`-style stamps, `AM`/`PM`, and ANSI color codes are handled.
-- When auto-detection is not enough, declare formats per file glob: `LOG_TS_FORMATS='fly-*.log=%FT%T%.fZ; dev-*.log=%H:%M:%S'`.
-
-### Streamed Sources (Fly, k8s, journald, Docker)
-
-Not all logs live in files. Declare streaming commands and the server tees them into rotating files under `LOG_DIR`, making remote production logs searchable, tailable, and correlatable with every tool above:
-
-```bash
-LOG_SOURCES='fly:cmd=flyctl logs -a my-app; k8s:cmd=kubectl logs -f deploy/api'
-```
-
-Each source gets a supervised worker: lines are tagged `[src:<name>] ` for cross-source attribution, files rotate before they exceed the size limit, and exited commands are respawned with exponential backoff (diagnostics on stderr only -- stdout stays pure JSON-RPC). `list_logs` shows each source as `live` with its worker status.
-
-> **Security note:** `LOG_SOURCES` executes arbitrary commands with the server's privileges -- the same trust level as the server's own launch command. Treat it like a startup script; never build it from untrusted input. See [Streamed Sources](docs/reference/TOOLS.md#streamed-sources-log_sources) for details.
-
-### Severity Level Filtering
-
-Control what `get_errors` returns with the `level` parameter:
-
-| Level | Returns |
-|-------|---------|
-| `fatal` | FATAL, PANIC only |
-| `error` | ERROR + FATAL |
-| `warn` | WARN + ERROR + FATAL (default) |
-| `info` | INFO and above |
-
-Combine with `exclude` to remove known noise:
-
-```json
-{"name": "get_errors", "arguments": {"file": "api.log", "level": "error", "exclude": "health.check|retry"}}
-```
-
-### Configurable Error Patterns
-
-Customize what patterns trigger error detection via environment variables:
-
-| Variable | Effect |
-|----------|--------|
-| `LOG_EXTRA_PATTERNS` | Add patterns (merged with defaults) |
-| `LOG_ERROR_PATTERNS` | Override error patterns entirely |
-| `LOG_WARN_PATTERNS` | Override warn patterns entirely |
-| `LOG_FATAL_PATTERNS` | Override fatal patterns entirely |
-
-```bash
-LOG_EXTRA_PATTERNS="circuit.breaker|deadline.exceeded" docker run ...
-```
-
----
+- **Auto-detect JSON logs** — Pino, structlog, GCP Cloud Logging, etc.; extracts severity from standard fields
+- **Cross-service correlation** — Trace a request/session across all log files in one call
+- **Time-based filtering** — Every tool supports `since`/`until` (absolute or relative)
+- **Template rollup** — Group repeated errors; 10,000 repeats become one row with count
+- **Polling cursors** — `tail_log` and `search_logs` return opaque cursor; next call returns only new lines
+- **Persistent index** — ETS+DETS incremental index accelerates time-window queries; disable with `LOG_INDEX=off`
+- **Streamed sources** — Declare Fly/k8s/journald commands; server tees into rotating files and serves them alongside file logs
+- **Honest truncation** — Capped lists marked with `omissions` block; nothing dropped silently
 
 ## Configuration
 
 | Variable | Default | Description |
-|----------|---------|-------------|
+|---|---|---|
 | `LOG_DIR` | `/tmp/mcp-logs` | Directory containing `.log` files |
-| `MAX_LOG_FILE_MB` | `100` | Skip files larger than this (prevents memory issues) |
+| `MAX_LOG_FILE_MB` | `100` | Skip files larger than this |
 | `LOG_RETENTION_DAYS` | _(none)_ | Auto-delete logs older than N days on startup |
-| `LOG_SOURCES` | _(none)_ | Streamed sources to ingest: `name:cmd=command` entries separated by `;` |
-| `LOG_SOURCE_ROTATE_MB` | `MAX_LOG_FILE_MB` | Rotate a streamed source's file before it exceeds this size |
-| `LOG_SOURCE_ROTATIONS` | `3` | Rotated files kept per streamed source |
-| `LOG_TS_FORMATS` | _(none)_ | Declared timestamp formats: `glob=format` entries separated by `;` (e.g. `fly-*.log=%FT%T%.fZ; dev-*.log=%H:%M:%S`) |
-| `LOG_INDEX` | `on` | Set `off` (or `0`/`false`) to disable the persistent index; queries fall back to linear scans with identical results |
-| `MCP_LOG_SYNC_ENABLED` | `false` | Permit `sync_logs` mutation when caller also sets `dry_run: false` |
-| `MCP_LOG_SYNC_ALLOWED_SOURCES` | _(none)_ | Comma-separated `gs://`, `s3://`, or `az://` URI prefixes allowed for sync |
-| `LOG_EXTRA_PATTERNS` | _(none)_ | Additional error patterns (pipe-separated regex) |
-| `LOG_ERROR_PATTERNS` | _(none)_ | Override default error patterns |
-| `LOG_WARN_PATTERNS` | _(none)_ | Override default warn patterns |
-| `LOG_FATAL_PATTERNS` | _(none)_ | Override default fatal patterns |
+| `LOG_SOURCES` | _(none)_ | Streamed commands: `name:cmd=command; ...` |
+| `LOG_TS_FORMATS` | _(none)_ | Custom timestamp formats: `glob=format; ...` |
+| `LOG_INDEX` | `on` | Set `off` to disable persistent index |
 
----
+See [full reference](docs/reference/TOOLS.md) for all 13 tools and configuration.
 
-## Architecture
+## Limits
 
-```
-Transport (stdio)
-    ↓
-Protocol (JSON-RPC 2.0, TOON)
-    ↓
-Server (method routing)
-    ↓
-Tools (behaviour + 12 thin modules: validate args, call one use-case)
-    ↓
-Use Cases (orchestration, one per tool capability)
-    ↓
-Ports (LogSource · LogIndex · LogSync · Config behaviours)
-   ↙                                  ↘
-Domain (pure functions:               Infrastructure (adapters: file source,
-  Correlator, Rollup, SparseIndex,      streamed source workers, ETS+DETS
-  WindowDiff, TimestampParser, ...)     index, cloud sync, env config)
-```
-
-**Adding a new tool** = one use-case module + one thin tool module implementing the `Tool` behaviour + one line in the registry. No existing code modified.
-
-See the [Architecture docs](docs/concepts/ARCHITECTURE.md) for the full module breakdown, design decisions, and security model.
-
----
-
-## Documentation
-
-### Getting Started
-
-| | |
-|---|---|
-| [Quick Start](docs/getting-started/QUICK_START.md) | Get running in 5 minutes |
-| [Examples Walkthrough](examples/README.md) | Debug a cascading failure step-by-step |
-| [MCP Client Setup](docs/guides/MCP_CLIENT_SETUP.md) | Configure Cursor, VS Code, and other MCP clients |
-
-### Use Cases
-
-| | |
-|---|---|
-| [Monorepo Development](docs/guides/USE_CASE_MONOREPO.md) | Multi-service monorepo with per-service log files |
-| [Incident Response](docs/guides/USE_CASE_INCIDENT_RESPONSE.md) | Production triage: all_errors → correlate → trace_ids |
-| [GCP Cloud Logging](docs/guides/USE_CASE_GCP_LOGS.md) | Working with `gcloud logging read` exports |
-
-### Guides
-
-| | |
-|---|---|
-| [Log Structuring](docs/guides/LOG_STRUCTURING.md) | Structure your logs for maximum tool accuracy — field mapping, stack-specific configs, quality scorecard |
-
-### Reference
-
-| | |
-|---|---|
-| [Tool Reference](docs/reference/TOOLS.md) | All 13 tools with parameters, examples, and response formats |
-| [TOON Format](docs/concepts/TOON_FORMAT.md) | Token-Oriented Object Notation specification |
-| [Architecture](docs/concepts/ARCHITECTURE.md) | Ports & adapters layer design, Tool behaviour, security model |
-| [ADR-001: Index Storage](docs/decisions/001-index-storage.md) | Why the persistent index uses ETS+DETS instead of SQLite |
-| [Contributing](docs/CONTRIBUTING.md) | Development standards and how to add tools |
-
----
-
-## Security
-
-- **Path traversal protection** — file access restricted to `LOG_DIR`; only basenames accepted
-- **Read-only tools** — no tool writes outside `LOG_DIR` (`sync_logs` fetches into `LOG_DIR`; the index lives under `LOG_DIR/.index/`)
-- **No arbitrary command execution** — `sync_logs` shells out only to the fixed cloud CLIs (`gsutil`/`aws`/`az`); `LOG_SOURCES` commands are operator-declared boot configuration, never built from tool input
-- **Stdio isolation** — MCP protocol on stdout, logger on stderr (no mixing)
-- **File size limits** — files exceeding `MAX_LOG_FILE_MB` are skipped with a warning
-
----
+- Only one MCP server instance per log directory (no concurrent mutations).
+- `sync_logs` mutation is opt-in via `MCP_LOG_SYNC_ENABLED=true`.
+- Files exceeding `MAX_LOG_FILE_MB` are skipped with a warning.
+- Timestamps that cannot be parsed are never dropped (`since`/`until` fail-open); reported in `unparsed_ts` field.
 
 ## License
 
-[MIT](LICENSE)
+MIT
